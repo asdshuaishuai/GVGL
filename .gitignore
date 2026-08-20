@@ -1,0 +1,14 @@
+# Swift / SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# 打包产物
+dist/
+
+# macOS
+.DS_Store
+
+# 运行时残留
+*.sock
+*.log
