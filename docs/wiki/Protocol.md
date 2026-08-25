@@ -8,10 +8,36 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`，可用 `GVGL_SOCKET` 环境变
 ```
 → {"method":"get_frame"}                       ← {"result": GVGLFrame}
 → {"method":"get_frame","app":"pid:123"}       ← 单 App 过滤帧
+→ {"method":"get_frame","depth":2}             ← 按层剪枝（V4）
+→ {"method":"get_map"}                         ← 粗粒度象限地图（V5）
 → {"method":"get_frame","since":123}           ← 增量拉取
 → {"method":"subscribe","since":123}           ← 长连接推送
+→ {"method":"subscribe","regions":["d1q2"]}    ← 象限掩码推送（V5.1）
 → {"method":"get_status"}                      ← 守护进程状态
 ```
+
+### get_map 粗粒度象限地图（V5）
+
+agent 的首次拉取（KB 级）：先看"哪块屏哪个象限有哪些窗口"，再按
+`get_frame?app=` / `get_frame?depth=N` 下钻。
+
+```
+{"result":{
+  "version": N, "status": "ok",
+  "displays":[{"id":1,"index":0,"x":0,"y":0,"width":3440,"height":1440,"scaleFactor":2}, ...],
+  "windows":[{"id":"pid:24158:0","appKey":"pid:24158","appName":"ZCode","title":"ZCode",
+              "display":1,               // displays[] 的 index
+              "rect":{"x":0.001,"y":0.028,"w":1.0,"h":0.972},   // Display Space
+              "region":"q4","region9":"rightBottom",
+              "zIndex":3,"frontmost":true}, ...],   // zIndex 序（前台在前）
+  "frontmostApp":"pid:24158"
+}}
+```
+
+- `display` 为 displays[] 的 **index**（0 = 主屏）；查询过滤用 CG display **id**
+  （`query --display`，见 `map` 输出的 `displays[].id`）。
+- `zIndex` 为 nil 表示不在当前 Space / 未匹配 CG（`z?`）。
+- 从物化帧派生，无 AX 调用，毫秒级。
 
 ### get_frame?since 增量拉取
 
@@ -26,9 +52,22 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`，可用 `GVGL_SOCKET` 环境变
 ```
 {"result":{"event":"subscribed","version":N}}
 之后每 version 变化推送一行：
-{"event":"frame","version":N,"changed_apps":[...]}
+{"event":"frame","version":N,"changed_apps":[...],"changed_regions":["d1q2",...]}
 静默期每 60s 一行：{"event":"ping","version":N}
 ```
+
+`changed_regions`（V5.1）：本次变更触及的象限桶 `d<displayID><region>`（如 `d1q2`；
+无 displayID 记 `d0`；frontmost 变化记 `sys`）——新增/变更实体按新位置入桶，移除按旧位置。
+
+**象限掩码订阅**（V5.1）：
+
+```
+→ {"method":"subscribe","regions":["d1q2","d2q4","sys"]}
+```
+
+只推送触及掩码桶的版本变更（游标照常前进，不匹配的事件静默跳过）。被滤掉的版本号
+不推送；`since` 增量拉取不受影响，仍返回完整帧。`sys`（前台 App 变化）需显式加入
+掩码才会收到。
 
 ## 错误码
 

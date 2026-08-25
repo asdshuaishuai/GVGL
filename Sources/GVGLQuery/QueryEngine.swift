@@ -8,17 +8,21 @@ public struct QueryParams: Equatable, Hashable {
     public var label: String?
     public var region: String?
     public var app: String?
+    /// V5: CGDirectDisplayID filter (entities on one physical display).
+    public var display: Int?
     public var refID: String?
     public var refDir: String?
     public var top: Int
 
     public init(role: String? = nil, label: String? = nil, region: String? = nil,
-                app: String? = nil, refID: String? = nil, refDir: String? = nil,
+                app: String? = nil, display: Int? = nil,
+                refID: String? = nil, refDir: String? = nil,
                 top: Int = 5) {
         self.role = role
         self.label = label
         self.region = region
         self.app = app
+        self.display = display
         self.refID = refID
         self.refDir = refDir
         self.top = top
@@ -98,12 +102,17 @@ public enum QueryEngine {
         let entities: [Entity] = params.app.map { app in
             frame.allEntities.filter { $0.appID == app }
         } ?? frame.allEntities
-        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.id, $0) })
+        let byID = Dictionary(entities.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         var candidates = entities
         if let region = params.region {
             let regionSet = Set(frame.index.byRegion[region] ?? [])
             candidates = candidates.filter { regionSet.contains($0.id) }
+        }
+        if let display = params.display {
+            // V5: physical-display filter — quadrant/region queries pair with
+            // this to target one screen ("右上角的那块屏").
+            candidates = candidates.filter { $0.displayID == display }
         }
 
         let refEntity = params.refID.flatMap { byID[$0] }

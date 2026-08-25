@@ -455,7 +455,7 @@ public final class SyncEngine: @unchecked Sendable {
             let candidates = oldWindows.filter { !handled.contains($0.id) }
             guard let match = candidates.min(by: { distanceFrom($0, to: rect) < distanceFrom($1, to: rect) }),
                   distanceFrom(match, to: rect) < 0.05 else { continue }
-            guard let path = parsePath(from: match.id) else { continue }
+            guard let path = Self.numericPath(from: match.id) else { continue }
             handled.insert(match.id)
             captureSubtree(info: info, windowID: match.id, path: path)
         }
@@ -502,18 +502,42 @@ public final class SyncEngine: @unchecked Sendable {
 
     /// Replaces only the entities of `windowID` with the freshly captured
     /// subtree; every other window keeps its previous entities byte-identical.
+    ///
+    /// Keep-filter is three-way, not just `windowID != windowID`: a subtree
+    /// re-capture also re-produces entities of nested windows (sheets,
+    /// drawers, Electron inner AXWindows) whose `windowID` points at the
+    /// nested window — filtering on the top-level id alone left them in
+    /// `keep` and the merged set ended up with the same path id twice.
+    /// 1. exact subtree ids (deterministic path-derived ids),
+    /// 2. the captured window's path namespace (covers budget-truncated
+    ///    re-captures that produced fewer ids than the previous sweep),
+    /// 3. the legacy windowID equality,
+    /// and the final id-dedup keeps the first occurrence.
     private func mergeWindow(previous: PipelineOutput, subtree: PipelineOutput, windowID: String) -> PipelineOutput {
-        let keep = previous.entities.filter { $0.windowID != windowID }
+        let subtreeIDs = Set(subtree.entities.map(\.id))
+        let keep = previous.entities.filter { e in
+            !subtreeIDs.contains(e.id) && !isInSubtreeNamespace(e.id, of: windowID) && e.windowID != windowID
+        }
         let entities = (keep + subtree.entities).sorted { $0.id < $1.id }
         let relations = computeRelations ? TopologyComputer().compute(entities: entities) : []
         return PipelineOutput(
             entities: entities,
             relations: relations,
-            index: SpatialIndex.build(from: entities),
+            index: SpatialIndex.build(from: entities, gridSize: indexGridSize),
             cgWindowCount: previous.cgWindowCount,
             axWindowCount: previous.axWindowCount,
             missingWindowTitles: previous.missingWindowTitles
         )
+    }
+
+    /// True when `id` is `windowID` itself or a path-descendant of it
+    /// ("pid:7:0-2" owns "pid:7:0-2-3-1"). Non-path ids (stabilized drift,
+    /// "mb" menu-bar ids) are never in the namespace.
+    private func isInSubtreeNamespace(_ id: String, of windowID: String) -> Bool {
+        guard let entityPath = Self.numericPath(from: id),
+              let windowPath = Self.numericPath(from: windowID) else { return false }
+        guard entityPath.count >= windowPath.count else { return false }
+        return zip(entityPath, windowPath).allSatisfy(==)
     }
 
     private func distanceFrom(_ entity: Entity, to rect: NormRect) -> Double {
@@ -524,7 +548,7 @@ public final class SyncEngine: @unchecked Sendable {
     }
 
     /// "pid:722:0-2-3" → [0, 2, 3]; nil for ids without a numeric path suffix.
-    private func parsePath(from id: String) -> [Int]? {
+    static func numericPath(from id: String) -> [Int]? {
         guard let suffix = id.split(separator: ":", maxSplits: 2).last else { return nil }
         let parts = suffix.split(separator: "-").compactMap { Int($0) }
         guard !parts.isEmpty, parts.count == suffix.split(separator: "-").count else { return nil }

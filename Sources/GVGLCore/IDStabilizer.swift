@@ -46,10 +46,14 @@ public enum IDStabilizer {
                     matched = positional[0]
                 }
             }
-            // Only record actual re-keys; id → same-id mappings are noise.
-            if let matched, matched.id != n.id {
-                map[n.id] = matched.id
+            // A self-match (unchanged path) still consumes the old id: without
+            // it, a later duplicate-titled sibling could remap onto the same
+            // id and the re-keyed set would contain it twice.
+            if let matched {
                 used.insert(matched.id)
+                if matched.id != n.id {
+                    map[n.id] = matched.id
+                }
             }
         }
         return map
@@ -102,6 +106,11 @@ public enum IDStabilizer {
 
 public extension PipelineOutput {
     /// Rewrites entity/relation ids and rebuilds the index after stabilization.
+    ///
+    /// Collision-safe: a re-keyed entity never steals the id of an entity that
+    /// kept its own (stable references win; the duplicate re-key is dropped).
+    /// Without this, stabilize's order-dependent matching could produce two
+    /// entities with the same id after remapping.
     func remapped(by map: [String: String]) -> PipelineOutput {
         guard !map.isEmpty else { return self }
         let newIDs = Set(map.keys)
@@ -111,14 +120,24 @@ public extension PipelineOutput {
             return map[id]
         }
 
-        let remappedEntities = entities.map { e in
+        var remappedEntities: [Entity] = []
+        var claimed = Set<String>()
+        // Pass 1: entities keeping their own id claim it first.
+        for e in entities where map[e.id] == nil {
+            guard claimed.insert(e.id).inserted else { continue }
             var e = e
-            if let mapped = map[e.id] {
-                e.id = mapped
-            }
             e.entityParentID = remapID(e.entityParentID)
             e.windowID = remapID(e.windowID)
-            return e
+            remappedEntities.append(e)
+        }
+        // Pass 2: re-keyed entities fill in, skipping ids already claimed.
+        for e in entities where map[e.id] != nil {
+            guard let final = map[e.id], claimed.insert(final).inserted else { continue }
+            var e = e
+            e.id = final
+            e.entityParentID = remapID(e.entityParentID)
+            e.windowID = remapID(e.windowID)
+            remappedEntities.append(e)
         }
 
         // Remap is a pure re-keying: every entity pre-remap exists, so every

@@ -38,6 +38,7 @@ struct EntityDetailView: View {
                 }
                 group("几何") {
                     row("screen", fmt(entity.geometry.screen), mono: true)
+                    row("display", fmt(entity.geometry.display), mono: true)
                     row("window", fmt(entity.geometry.window), mono: true)
                     row("local", fmt(entity.geometry.local), mono: true)
                     let px = QueryEngine.pixelCenter(of: entity, screen: frame.screen)
@@ -129,7 +130,7 @@ struct EntityDetailView: View {
     /// Ancestor chain (app root → … → parent) + direct children — the
     /// containment path that flat frames expressed via relations.
     private var hierarchySection: some View {
-        let byID = Dictionary(uniqueKeysWithValues: frame.allEntities.map { ($0.id, $0) })
+        let byID = Dictionary(frame.allEntities.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var chain: [Entity] = []
         var current = entity.entityParentID
         var hops = 0

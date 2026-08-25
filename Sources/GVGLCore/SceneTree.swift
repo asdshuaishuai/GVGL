@@ -20,11 +20,22 @@ public enum SceneTree {
     ///   depth) without pretending the subtree is empty.
     public static func build(entities: [Entity], depth: Int? = nil) -> [Entity] {
         guard !entities.isEmpty else { return [] }
-        let ids = Set(entities.map(\.id))
+        // Defensive dedup: duplicate ids would otherwise attach the same node
+        // twice under one parent. First occurrence wins (both capture paths
+        // emit id-sorted lists, so this is deterministic).
+        var seen = Set<String>()
+        seen.reserveCapacity(entities.count)
+        var unique: [Entity] = []
+        unique.reserveCapacity(entities.count)
+        for e in entities where seen.insert(e.id).inserted {
+            unique.append(e)
+        }
+        let ids = Set(unique.map(\.id))
         var childrenOf: [String: [Entity]] = [:]
         var roots: [Entity] = []
-        for e in entities {
-            if let parent = e.entityParentID, ids.contains(parent) {
+        for e in unique {
+            // Self-parents (a remap artifact) degrade to roots, not cycles.
+            if let parent = e.entityParentID, parent != e.id, ids.contains(parent) {
                 childrenOf[parent, default: []].append(e)
             } else {
                 roots.append(e)

@@ -476,4 +476,66 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(on.axWindowCount, 1)
         XCTAssertEqual(on.missingWindowTitles, ["幽灵窗"])
     }
+
+    /// Electron-class apps mutate their tree mid-walk often enough that the
+    /// same path gets visited twice in one snapshot. uniqueKeysWithValues
+    /// used to trap the whole daemon on the first occurrence.
+    func testDuplicateNodeIDsDoNotTrap() {
+        let key = "pid:12"
+        func window(id: String, title: String) -> AXNode {
+            AXNode(
+                id: id, role: "AXWindow", title: title,
+                frame: CGRect(x: 0, y: 0, width: 400, height: 300),
+                parentID: "\(key):root", windowID: id
+            )
+        }
+        // Two distinct windows whose ids collide (path "0" reported twice).
+        let snapshot = AXAppSnapshot(
+            appKey: key, pid: 12,
+            nodes: [AXNode(
+                id: "\(key):root", role: nil, frame: nil,
+                parentID: nil, windowID: nil,
+                children: [window(id: "\(key):0", title: "第一份"), window(id: "\(key):0", title: "第二份")]
+            )],
+            visited: 3, truncated: false, error: nil, elapsed: 0
+        )
+        let out = Pipeline(screen: screen).process(snapshot)
+        XCTAssertEqual(out.entities.filter { $0.id == "\(key):0" }.count, 1,
+                       "duplicate node ids must collapse to one entity, first visit wins")
+    }
+
+    /// Secondary-display windows must still match their CG counterpart for
+    /// z-order. Regression: pixelCenter used to mix main-screen normalization
+    /// with the secondary display's origin+size (double offset), so every
+    /// secondary-display window failed the 24px proximity test.
+    func testSecondaryDisplayZOrderMatchesCG() {
+        let dual = ScreenInfo(
+            width: 3440, height: 1440, scaleFactor: 2.0,
+            displays: [
+                DisplayInfo(id: 1, x: 0, y: 0, width: 3440, height: 1440, scaleFactor: 2.0),
+                DisplayInfo(id: 2, x: -1920, y: 0, width: 1920, height: 1080, scaleFactor: 2.0),
+            ]
+        )
+        let key = "pid:13"
+        // Window fully on the secondary display: pixels (-1920..-920, 100..700).
+        let win = AXNode(
+            id: "\(key):0", role: "AXWindow", title: "副屏窗",
+            frame: CGRect(x: -1920, y: 100, width: 1000, height: 600),
+            parentID: "\(key):root", windowID: "\(key):0"
+        )
+        var snapshot = AXAppSnapshot(
+            appKey: key, pid: 13,
+            nodes: [AXNode(id: "\(key):root", role: nil, frame: nil,
+                           parentID: nil, windowID: nil, children: [win])],
+            visited: 0, truncated: false, error: nil, elapsed: 0
+        )
+        snapshot.cgWindows = [
+            CGWindowInfo(id: 950, name: "副屏窗", bounds: CGRect(x: -1920, y: 100, width: 1000, height: 600), layer: 0, zIndex: 0),
+        ]
+        let out = Pipeline(screen: dual).process(snapshot)
+        XCTAssertEqual(out.entities.first { $0.id == "\(key):0" }?.zIndex, 0,
+                       "secondary-display window must match its CG window (center -1420,400)")
+        // displayID metadata still resolves to the physical display.
+        XCTAssertEqual(out.entities.first { $0.id == "\(key):0" }?.displayID, 2)
+    }
 }

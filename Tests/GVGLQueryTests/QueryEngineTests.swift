@@ -17,7 +17,8 @@ final class QueryEngineTests: XCTestCase {
         actions: [String] = ["AXPress"],
         rect: NormRect = NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05),
         windowID: String? = "w",
-        appID: String = "pid:1"
+        appID: String = "pid:1",
+        displayID: Int? = nil
     ) -> Entity {
         Entity(
             id: id, role: role, title: title, detail: detail, identifier: identifier,
@@ -25,6 +26,7 @@ final class QueryEngineTests: XCTestCase {
             enabled: enabled, actions: actions,
             axParentID: nil, entityParentID: windowID, windowID: windowID,
             appID: appID, pid: 1,
+            appName: nil, displayID: displayID,
             geometry: Geometry(screen: rect, window: rect)
         )
     }
@@ -172,6 +174,23 @@ final class QueryEngineTests: XCTestCase {
         let p = QueryEngine.pixelCenter(of: e, screen: screen)
         XCTAssertEqual(p.x, 0.5 * 3440, accuracy: 0.01)
         XCTAssertEqual(p.y, 0.65 * 1440, accuracy: 0.01)
+    }
+
+    /// V5: display filter narrows candidates to one physical display —
+    /// "display 2 的 q2" becomes a two-keyword query.
+    func testDisplayFilter() {
+        let a = entity("a", title: "按钮", displayID: 1)
+        let b = entity("b", title: "按钮", displayID: 2)
+        let f = frame([a, b])
+
+        let onTwo = QueryEngine.query(frame: f, params: QueryParams(label: "按钮", display: 2, top: 5))
+        XCTAssertEqual(onTwo.ranked.map(\.id), ["b"])
+
+        let onOne = QueryEngine.query(frame: f, params: QueryParams(label: "按钮", display: 1, top: 5))
+        XCTAssertEqual(onOne.ranked.map(\.id), ["a"])
+
+        let unknown = QueryEngine.query(frame: f, params: QueryParams(label: "按钮", display: 7, top: 5))
+        XCTAssertEqual(unknown.status, .notFound)
     }
 }
 
