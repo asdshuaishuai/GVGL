@@ -256,6 +256,29 @@ final class DesktopModelTests: XCTestCase {
         XCTAssertEqual(model.frame(screen: screen).allEntities[0].displayID, 2)
     }
 
+    /// Regression (review I2): a 9-grid jump across TWO boundaries in one
+    /// capture (left → right column) must compare against the boundary
+    /// adjacent to the OLD label. The old "far edge" rule stuck the Left
+    /// label to positions just inside the Right column, persistently.
+    func testRegionHysteresisMultiBoundaryJump() {
+        let model = DesktopModel()
+        // Left column: centerX 0.15 → region9 left.
+        upsert(model, windowEntity(id: "w", displayRect: NormRect(x: 0.05, y: 0.20, w: 0.20, h: 0.20), displayID: 1))
+        XCTAssertEqual(firstRegion(model).1, .leftTop)
+
+        // One capture later the window is at centerX 0.68 — inside the Right
+        // column (plain index 2), 0.013 past 2/3. The separating boundary
+        // from the old label is 1/3 (crossed by 0.347 ≫ band) → flip,
+        // NOT stuck at leftTop.
+        upsert(model, windowEntity(id: "w", displayRect: NormRect(x: 0.58, y: 0.20, w: 0.20, h: 0.20), displayID: 1))
+        XCTAssertEqual(firstRegion(model).1, .rightTop, "multi-boundary jump must not stick the old label")
+
+        // The pure single-boundary stickiness still holds: back at centerX
+        // 0.655 (0.012 past 2/3 from a Right-column state) stays rightTop.
+        upsert(model, windowEntity(id: "w", displayRect: NormRect(x: 0.555, y: 0.20, w: 0.20, h: 0.20), displayID: 1))
+        XCTAssertEqual(firstRegion(model).1, .rightTop, "single-boundary band still sticky")
+    }
+
     /// Region buckets: added/changed entities bucket at their new position,
     /// removed at their old one; byte-identical upserts touch nothing;
     /// frontmost changes log "sys".

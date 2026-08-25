@@ -93,7 +93,8 @@ public struct NormRect: Codable, Hashable, Sendable {
 
 // MARK: - Spatial labels
 
-/// Four quadrants, computed from the entity center in Screen Space.
+/// Four quadrants, computed from the entity center in Display Space (V5:
+/// per-display quadrants — the space a human sees the element in).
 public enum Region: String, Codable, Hashable, Sendable, CaseIterable {
     case q1, q2, q3, q4
 
@@ -105,7 +106,7 @@ public enum Region: String, Codable, Hashable, Sendable, CaseIterable {
     }
 }
 
-/// Nine-grid cell, computed from the entity center in Screen Space.
+/// Nine-grid cell, computed from the entity center in Display Space (V5).
 public enum Region9: String, Codable, Hashable, Sendable, CaseIterable {
     case leftTop, centerTop, rightTop
     case leftCenter, centerCenter, rightCenter

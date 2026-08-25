@@ -383,8 +383,12 @@ public final class DesktopModel: @unchecked Sendable {
 
     /// Interval index of `value` under sorted `boundaries`, with hysteresis
     /// against `previous` (the previously stored label's axis index): a flip
-    /// is accepted only when `value` moved past the separating boundary by
-    /// more than `band`.
+    /// is accepted only when `value` moved past the boundary separating the
+    /// old interval from the direction of travel by more than `band`.
+    /// For a jump across several intervals (9-grid left↔right in one capture)
+    /// the separator is the boundary adjacent to the OLD label — comparing
+    /// against the far edge would stick the old label to a position that is
+    /// clearly inside a new interval.
     private static func stableAxisIndex(previous: Int, value: Double, boundaries: [Double], band: Double) -> Int {
         func plain(_ v: Double) -> Int {
             var idx = 0
@@ -393,8 +397,11 @@ public final class DesktopModel: @unchecked Sendable {
         }
         let newIndex = plain(value)
         guard newIndex != previous else { return previous }
-        // boundaries sorted; the one separating previous and new:
-        let separator = boundaries[max(previous, newIndex) - 1]
+        // Separator adjacent to the old label on the side of travel:
+        // rightward jumps cross `boundaries[previous]`, leftward cross
+        // `boundaries[previous - 1]` (both in range for single- and
+        // multi-boundary jumps).
+        let separator = newIndex > previous ? boundaries[previous] : boundaries[previous - 1]
         return (value - separator).magnitude < band ? previous : newIndex
     }
 

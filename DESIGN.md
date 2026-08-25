@@ -267,7 +267,7 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`），NDJSON 一行一答；`subs
 → {"method":"get_frame","app":"pid:123"}       ← 单 App 过滤帧
 → {"method":"get_frame","depth":2}             ← V4：按层剪枝（prunedChildCount 标注）
 → {"method":"get_map"}                         ← V5：粗粒度象限地图 DesktopMap
-                                                 {version, displays[{id,index,x,y,w,h,scale}],
+                                                 {version, displays[{id,index,x,y,width,height,scaleFactor}],
                                                   windows[{id,appKey,appName,title,display,
                                                            rect(显示空间),region,region9,zIndex,
                                                            frontmost}]（zIndex 序，前台在前）,
@@ -329,7 +329,7 @@ Sources/GVGLServer/  UDS 服务（get_frame/since/subscribe 推送/get_status）
 Sources/gvgl/       守护进程入口（参数/信号/显示器枚举）
 client/gvgl_query.py 参考客户端（status/frame/list/query/subscribe/watch + --json/--cell）
 scripts/             launchd 安装/卸载脚本（V2-5）+ audit_geometry.py 真机几何审计（V4.1）
-Tests/              122 个单测（不依赖真实 AX）
+Tests/              124 个单测（不依赖真实 AX）
 ```
 
 ## 11. 运行参数
@@ -471,6 +471,6 @@ python3 client/gvgl_query.py list
 python3 client/gvgl_query.py query --role AXButton --label 登录 --pixels
 python3 client/gvgl_query.py query --role AXButton --reference pid:xxx:0-1 --relation right-of
 python3 client/gvgl_query.py watch --interval 0.5
-swift test                                    # 122 个单测
+swift test                                    # 124 个单测
 python3 scripts/audit_geometry.py             # 真机几何审计（硬性不变量 + 信息性 AX 奇异）
 ```

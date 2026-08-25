@@ -156,6 +156,12 @@ public final class SocketServer: @unchecked Sendable {
     private func pushLoop(_ fd: Int32, from initial: UInt64, mask: Set<String>?) {
         var last = initial
         var quietTimeouts = 0
+        // Masked-out bumps still reset quietTimeouts, so the quiet-path ping
+        // never fires under constant churn — without this a dead masked
+        // client would leak its fd forever (EPIPE only happens on write).
+        // Counts VERSIONS: waitForVersion can burst-return many bumps in one
+        // wake-up, so iteration counting would never reach the threshold.
+        var maskedVersions: UInt64 = 0
         while true {
             guard let newVersion = model.waitForVersion(after: last, timeout: 5) else {
                 // No change within the window. Ping occasionally so a dead
@@ -168,12 +174,20 @@ public final class SocketServer: @unchecked Sendable {
                 continue
             }
             quietTimeouts = 0
+            let consumed = newVersion - last
             let apps = model.changedApps(after: last)
             let regions = model.changedRegions(after: last)
             last = newVersion
             if let mask, mask.isDisjoint(with: regions) {
+                maskedVersions += consumed
+                if maskedVersions >= 12 {
+                    maskedVersions = 0
+                    let ping = "{\"event\":\"ping\",\"version\":\(model.version)}\n"
+                    guard Self.writeLine(fd, ping) else { return }
+                }
                 continue // masked out: advance the cursor, stay silent
             }
+            maskedVersions = 0
             let event = PushEvent(event: "frame", version: newVersion, changed_apps: apps, changed_regions: regions)
             guard let payload = try? JSONEncoder.gvgl.encode(event),
                   let line = String(data: payload, encoding: .utf8) else { return }

@@ -83,7 +83,7 @@ Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几
 ## 测试
 
 ```bash
-swift test        # 122 个单测：几何/显示空间/拓扑/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）
+swift test        # 124 个单测：几何/显示空间/拓扑/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）
 ```
 
 ## 几何审计（真机不变量检查）
