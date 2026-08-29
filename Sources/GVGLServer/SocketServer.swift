@@ -139,7 +139,7 @@ public final class SocketServer: @unchecked Sendable {
             _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, bytes.count) }
         }
         if let subscription {
-            pushLoop(fd, from: subscription.lastVersion)
+            pushLoop(fd, from: subscription.lastVersion, mask: subscription.mask)
         }
         if verbose {
             fputs("gvgl: served \(requestLine.prefix(60)) -> \(response.count) bytes in \(Int(Date().timeIntervalSince(started) * 1000))ms\n", stderr)
@@ -149,10 +149,19 @@ public final class SocketServer: @unchecked Sendable {
     // MARK: - Push subscription
 
     /// Long-lived push loop: writes one NDJSON event line per model version
-    /// bump. Ends when the client goes away (EPIPE) or the loop is interrupted.
-    private func pushLoop(_ fd: Int32, from initial: UInt64) {
+    /// bump. With a region mask (V5.1), only bumps touching one of the masked
+    /// buckets are pushed — an agent watching "display 1's q2" doesn't hear
+    /// about every other region's churn. Ends when the client goes away
+    /// (EPIPE) or the loop is interrupted.
+    private func pushLoop(_ fd: Int32, from initial: UInt64, mask: Set<String>?) {
         var last = initial
         var quietTimeouts = 0
+        // Masked-out bumps still reset quietTimeouts, so the quiet-path ping
+        // never fires under constant churn — without this a dead masked
+        // client would leak its fd forever (EPIPE only happens on write).
+        // Counts VERSIONS: waitForVersion can burst-return many bumps in one
+        // wake-up, so iteration counting would never reach the threshold.
+        var maskedVersions: UInt64 = 0
         while true {
             guard let newVersion = model.waitForVersion(after: last, timeout: 5) else {
                 // No change within the window. Ping occasionally so a dead
@@ -165,9 +174,21 @@ public final class SocketServer: @unchecked Sendable {
                 continue
             }
             quietTimeouts = 0
+            let consumed = newVersion - last
             let apps = model.changedApps(after: last)
+            let regions = model.changedRegions(after: last)
             last = newVersion
-            let event = PushEvent(event: "frame", version: newVersion, changed_apps: apps)
+            if let mask, mask.isDisjoint(with: regions) {
+                maskedVersions += consumed
+                if maskedVersions >= 12 {
+                    maskedVersions = 0
+                    let ping = "{\"event\":\"ping\",\"version\":\(model.version)}\n"
+                    guard Self.writeLine(fd, ping) else { return }
+                }
+                continue // masked out: advance the cursor, stay silent
+            }
+            maskedVersions = 0
+            let event = PushEvent(event: "frame", version: newVersion, changed_apps: apps, changed_regions: regions)
             guard let payload = try? JSONEncoder.gvgl.encode(event),
                   let line = String(data: payload, encoding: .utf8) else { return }
             guard Self.writeLine(fd, line + "\n") else { return }
@@ -189,10 +210,15 @@ public final class SocketServer: @unchecked Sendable {
         var since: UInt64?
         /// V4: scene-tree depth limit (levels below each app root).
         var depth: Int?
+        /// V5.1: region-bucket mask ("d<displayID>q<region>", e.g. "d1q2";
+        /// "sys" for frontmost changes). Only version bumps touching one of
+        /// these buckets are pushed.
+        var regions: [String]?
     }
 
     private struct Subscription {
         var lastVersion: UInt64
+        var mask: Set<String>?
     }
 
     private struct ChangedResult: Codable {
@@ -211,6 +237,9 @@ public final class SocketServer: @unchecked Sendable {
         var event: String
         var version: UInt64
         var changed_apps: [String]
+        /// V5.1: region buckets touched by this change ("d<displayID>q<region>",
+        /// "sys" for frontmost); empty for structural-only bumps.
+        var changed_regions: [String]
     }
 
     private func route(_ line: String) -> (String, Subscription?) {
@@ -265,7 +294,21 @@ public final class SocketServer: @unchecked Sendable {
                   let text = String(data: payload, encoding: .utf8) else {
                 return (Self.errorResponse("internal", "serialization failed"), nil)
             }
-            return (text, Subscription(lastVersion: initial))
+            return (text, Subscription(lastVersion: initial, mask: request.regions.map(Set.init)))
+
+        case "get_map":
+            guard AXIsProcessTrusted() else {
+                return (Self.errorResponse("permission_denied", "Accessibility permission not granted"), nil)
+            }
+            // Coarse agent minimap (V5): displays + top-level windows in
+            // Display Space with quadrant labels. Derived from the cached
+            // frame — millisecond-scale, no AX calls.
+            let map = model.frame(screen: engine.screen).desktopMap
+            guard let payload = try? JSONEncoder.gvgl.encode(["result": map]),
+                  let text = String(data: payload, encoding: .utf8) else {
+                return (Self.errorResponse("internal", "map serialization failed"), nil)
+            }
+            return (text, nil)
 
         case "get_status":
             let s = engine.status()

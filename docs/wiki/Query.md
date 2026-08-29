@@ -6,11 +6,17 @@
 ## 查询流程
 
 ```
-Step 1 空间过滤：region 指定 → index.byRegion[region]（无则全量）
+Step 0 屏过滤（V5）：display 指定（CG display id，见 get_map）→ 过滤
+Step 1 空间过滤：region 指定 → index.byRegion[region]（无则全量）；
+     region 语义 = 元素所在屏的象限（V5，Display Space 派生）
 Step 2 角色过滤：role 指定 → 过滤
 Step 3 全量评分（不截断候选）
 Step 4 排序 → Top N + 置信度状态
 ```
+
+四级空间寻址（V5）：`display（哪块屏）× region（哪个象限）× app（哪个应用）
+× role/label（什么控件/文本）`，每级独立过滤键，例如
+`query --display 3 --region q4 --role AXWindow`。
 
 ## 五维评分（§6.2）
 

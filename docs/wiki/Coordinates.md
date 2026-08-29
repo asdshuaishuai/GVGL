@@ -6,11 +6,12 @@
 与 CGWindow 边界逐像素一致（delta x=0, delta y=0）。早期设计稿的"Cocoa 左下
 原点 + Y 翻转"假设被实测否定，**所有转换不做 Y 翻转**。
 
-## 三层坐标空间
+## 四层坐标空间
 
 | 空间 | 原点 | 范围 | 解决的问题 |
 | :--- | :--- | :--- | :--- |
 | Screen Space | 主屏左上角 | [0,1]×[0,1]（次屏元素可为负/超界） | 分辨率变化 |
+| Display Space（V5） | **所在物理屏**左上角（中心定屏） | [0,1]×[0,1] | 多屏象限：`region`/`region9` 由此派生；无 displays 信息时回退 screen space |
 | Window Space | 所属窗口左上角 | [0,1]×[0,1] | 窗口移动/缩放漂移 |
 | Local Space | 最近实体祖先（entityParentID）左上角 | [0,1]×[0,1]（可越界；无实体祖先时为 unit） | 容器内相对定位（V3 落地） |
 
@@ -27,6 +28,10 @@
     local.x = (e.x - p.x) / p.w
     local.y = (e.y - p.y) / p.h
     local.w = e.w / p.w ；local.h = e.h / p.h
+转换 2c Quartz 像素 → Display Space（相对所在物理屏 d，V5）
+    display.x = (rect.x - d.x) / d.w
+    display.y = (rect.y - d.y) / d.h
+    region/region9 ← Display Space 中心（每屏自己的象限）
 转换 3  Screen Space → 物理像素（执行时，Quartz 系）
     pixelX = centerX * screenW
     pixelY = centerY * screenH
@@ -39,8 +44,9 @@
 - 子元素内部点位（如"按钮的 30%,50%"）无需存储：客户端用
   `screen 原点 + 分率 × screen 尺寸` 即可表达——这正是原始文档预留
   local 的意图，V3 将其升格为承载真实几何的父容器空间。
-- 多显示器：坐标一律主屏归一化（原始文档 V1 只支持主屏）；`screen.displays[]`
-  与实体 `displayID` 是信息性元数据，不改变坐标语义。
+- 多显示器（V5）：Screen Space 仍主屏归一化（执行路径不变），Display Space
+  按元素所在物理屏归一化——象限标签描述"人看到的位置"，属于它自己的屏。
+  `screen.displays[]` 与实体 `displayID` 提供屏的身份与几何。
 
 ## 派生几何量
 
@@ -51,7 +57,8 @@ area = w * h         aspect = w / h
 
 ## 空间标签
 
-四象限（由 screen 中心计算）：
+四象限（V5 起由 **Display Space** 中心计算——每屏自己的象限；单屏时与
+screen 中心计算等价）：
 
 ```
 Q1: centerX < 0.5 AND centerY < 0.5   （帧内序列化为 "q1"）

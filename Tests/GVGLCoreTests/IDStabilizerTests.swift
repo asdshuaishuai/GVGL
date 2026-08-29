@@ -121,4 +121,23 @@ final class IDStabilizerTests: XCTestCase {
         XCTAssertEqual(remapped.axWindowCount, 2)
         XCTAssertEqual(remapped.missingWindowTitles, ["孤窗"])
     }
+
+    /// A re-keyed entity must never steal the id of an entity that kept its
+    /// own: stabilize's order-dependent matching could otherwise leave two
+    /// entities sharing one id after remapping. The kept (stable) entity wins;
+    /// the colliding re-key is dropped.
+    func testRemappedDropsCollisionWithKeptID() {
+        let kept = entity("pid:1:0-1", title: "确定")
+        let rekeyed = entity("pid:1:0-7", title: "确定")
+        let output = PipelineOutput(
+            entities: [kept, rekeyed],
+            relations: [],
+            index: SpatialIndex.build(from: [kept, rekeyed])
+        )
+        // Path-shifted candidate matched the same old element that survived.
+        let remapped = output.remapped(by: ["pid:1:0-7": "pid:1:0-1"])
+        XCTAssertEqual(remapped.entities.map(\.id), ["pid:1:0-1"],
+                       "kept entity claims the id; the colliding re-key is dropped")
+        XCTAssertEqual(remapped.index.byRole["AXButton"], ["pid:1:0-1"])
+    }
 }

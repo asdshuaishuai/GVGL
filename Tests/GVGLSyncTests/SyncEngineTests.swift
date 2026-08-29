@@ -403,4 +403,69 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(capturer.snapshotCount, 1)
         XCTAssertEqual(model.version, versionBefore)
     }
+
+    /// Window with a nested AXWindow (sheet / Electron inner window): the
+    /// subtree recapture re-produces the sheet's entities too. The keep-filter
+    /// used to compare only the top-level windowID, so the sheet's previous
+    /// entities survived AND the fresh copy was added — the same path id twice
+    /// (live-audit duplicates on Electron apps).
+    private func windowWithSheetNodes(pid: Int32, buttonTitle: String) -> [AXNode] {
+        let key = "pid:\(pid)"
+        let sheetButton = AXNode(
+            id: "\(key):0-1-0", role: "AXButton", title: buttonTitle,
+            frame: CGRect(x: 20, y: 20, width: 60, height: 24),
+            parentID: "\(key):0-1", windowID: "\(key):0-1"
+        )
+        let sheet = AXNode(
+            id: "\(key):0-1", role: "AXWindow", title: "Sheet",
+            frame: CGRect(x: 10, y: 10, width: 200, height: 150),
+            parentID: "\(key):0", windowID: "\(key):0-1",
+            children: [sheetButton]
+        )
+        let win = AXNode(
+            id: "\(key):0", role: "AXWindow", title: "Main",
+            frame: CGRect(x: 0, y: 0, width: 500, height: 400),
+            parentID: "\(key):root", windowID: "\(key):0",
+            children: [sheet]
+        )
+        return [AXNode(id: "\(key):root", role: nil, frame: nil,
+                       parentID: nil, windowID: nil, children: [win])]
+    }
+
+    func testWindowRecaptureWithNestedSheetDoesNotDuplicate() {
+        let model = DesktopModel()
+        let capturer = MockCapturer()
+        capturer.makeNodes = { [self] pid in windowWithSheetNodes(pid: pid, buttonTitle: "旧") }
+        capturer.makeWindowNodes = { [self] pid, path in
+            XCTAssertEqual(path, [0])
+            let key = "pid:\(pid)"
+            return AXAppSnapshot(
+                appKey: key, pid: pid,
+                nodes: windowWithSheetNodes(pid: pid, buttonTitle: "新").compactMap { node in
+                    // Subtree capture roots at the window itself (no app root).
+                    node.children.first
+                },
+                visited: 0, truncated: false, error: nil, elapsed: 0
+            )
+        }
+        let engine = SyncEngine(model: model, capturer: capturer, screen: screen, debounceInterval: 0.02)
+        engine.monitor(info: AppInfo(appKey: "pid:42", pid: 42, bundleID: nil, name: "X"))
+        XCTAssertTrue(waitUntil { model.meta(appKey: "pid:42")?.status == .synced })
+        Thread.sleep(forTimeInterval: 0.25) // throttle window
+
+        let before = model.frame(screen: screen)
+        XCTAssertEqual(before.allEntities.count, 3, "window + sheet + sheet button")
+        engine.markWindowDirty(pid: 42, rect: CGRect(x: 0, y: 0, width: 500, height: 400))
+        XCTAssertTrue(waitUntil { capturer.windowSnapshotCount >= 1 })
+        XCTAssertTrue(waitUntil { model.version > before.version })
+
+        let after = model.frame(screen: screen)
+        let all = after.allEntities
+        XCTAssertEqual(all.count, 3, "sheet entities must be replaced, not duplicated")
+        for id in ["pid:42:0", "pid:42:0-1", "pid:42:0-1-0"] {
+            XCTAssertEqual(all.filter { $0.id == id }.count, 1, "\(id) must appear exactly once")
+        }
+        XCTAssertEqual(all.first { $0.id == "pid:42:0-1-0" }?.title, "新",
+                       "fresh subtree content wins over the stale copy")
+    }
 }

@@ -95,6 +95,37 @@ final class SubscribeServerTests: XCTestCase {
         XCTAssertTrue(line.contains(#""event":"no_change""#), "got: \(line)")
     }
 
+    /// V5: get_map returns the coarse desktop map built from the model —
+    /// windows front-to-back with display index and quadrant labels.
+    func testGetMap() throws {
+        let entity = makeEntity("e1")
+        model.setFrontmost(appKey: "pid:1")
+        model.upsert(
+            appKey: "pid:1",
+            output: PipelineOutput(entities: [entity], relations: [], index: SpatialIndex()),
+            meta: meta("pid:1", 1)
+        )
+        let fd = clientSocket()
+        sendLine(fd, #"{"method":"get_map"}"#)
+        let line = readLine(fd)
+        close(fd)
+
+        guard let data = line.data(using: .utf8),
+              let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = payload["result"] as? [String: Any] else {
+            return XCTFail("bad get_map response: \(line)")
+        }
+        XCTAssertEqual(result["version"] as? Int, Int(model.version))
+        XCTAssertNotNil(result["frontmostApp"])
+        let displays = result["displays"] as? [[String: Any]] ?? []
+        XCTAssertEqual(displays.count, 1, "no display info → synthesized main display")
+        XCTAssertEqual(displays[0]["index"] as? Int, 0)
+        let windows = result["windows"] as? [[String: Any]] ?? []
+        XCTAssertEqual(windows.count, 1)
+        XCTAssertEqual(windows[0]["id"] as? String, "e1")
+        XCTAssertEqual(windows[0]["region"] as? String, "q4", "unit rect center (0.5,0.5) → q4")
+    }
+
     func testGetFrameSinceChanged() {
         let model = self.model
         model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
@@ -141,6 +172,93 @@ final class SubscribeServerTests: XCTestCase {
         let event = readLine(fd)
         XCTAssertTrue(event.contains("pid:2"), "got: \(event)")
         XCTAssertFalse(event.contains("pid:1"), "pre-since changes must not be reported: \(event)")
+        close(fd)
+    }
+
+    /// V5.1: region-masked subscription — only bumps touching a masked bucket
+    /// are pushed; pushed events carry their changed_regions.
+    func testSubscribeRegionsMask() {
+        let fd = clientSocket()
+        sendLine(fd, #"{"method":"subscribe","regions":["d1q2"]}"#)
+        let ack = readLine(fd)
+        XCTAssertTrue(ack.contains(#""event":"subscribed""#), "got: \(ack)")
+
+        func entity(_ id: String, rect: NormRect, app: String) -> Entity {
+            Entity(
+                id: id, role: "AXWindow", title: nil, detail: nil, identifier: nil,
+                enabled: true, actions: [],
+                axParentID: nil, entityParentID: nil, windowID: id,
+                appID: app, pid: 1, appName: nil, displayID: 1,
+                geometry: Geometry(screen: rect, window: .unit, display: rect)
+            )
+        }
+        func upsert(_ e: Entity, app: String, pid: Int32) {
+            model.upsert(
+                appKey: app,
+                output: PipelineOutput(entities: [e], relations: [], index: SpatialIndex()),
+                meta: meta(app, pid)
+            )
+        }
+
+        // Change in d1q3 (display 1, bottom-left), different app — masked out,
+        // must stay silent: readLine times out with no data.
+        upsert(entity("far", rect: NormRect(x: 0.1, y: 0.7, w: 0.1, h: 0.1), app: "pid:9"),
+               app: "pid:9", pid: 9)
+        let nothing = readLine(fd, timeout: 0.8)
+        XCTAssertEqual(nothing, "", "masked-out bump must not be pushed, got: \(nothing)")
+
+        // Change in d1q2 — pushed with changed_regions.
+        upsert(entity("near", rect: NormRect(x: 0.6, y: 0.2, w: 0.1, h: 0.1), app: "pid:1"),
+               app: "pid:1", pid: 1)
+        let event = readLine(fd)
+        close(fd)
+        XCTAssertTrue(event.contains(#""event":"frame""#), "got: \(event)")
+        XCTAssertTrue(event.contains(#""changed_regions":["d1q2"]"#), "got: \(event)")
+    }
+
+    /// V5.1 regression: masked-out churn must not disable dead-client
+    /// reaping. 12 silently-skipped versions write a ping so a dead masked
+    /// client still gets EPIPE'd; matching bumps still push frame events.
+    func testMaskedSubscriptionStillPingsUnderChurn() {
+        let fd = clientSocket()
+        sendLine(fd, #"{"method":"subscribe","regions":["d1q2"]}"#)
+        let ack = readLine(fd)
+        XCTAssertTrue(ack.contains(#""event":"subscribed""#), "got: \(ack)")
+
+        func entity(_ id: String, rect: NormRect) -> Entity {
+            Entity(
+                id: id, role: "AXWindow", title: nil, detail: nil, identifier: nil,
+                enabled: true, actions: [],
+                axParentID: nil, entityParentID: nil, windowID: id,
+                appID: "pid:9", pid: 9, appName: nil, displayID: 1,
+                geometry: Geometry(screen: rect, window: .unit, display: rect)
+            )
+        }
+        // 12 disjoint (d1q3) bumps, burst-style (waitForVersion may return
+        // them as one wake-up — the ping threshold counts versions).
+        for i in 0..<12 {
+            model.upsert(
+                appKey: "pid:9",
+                output: PipelineOutput(entities: [entity("far\(i)", rect: NormRect(x: 0.1, y: 0.7, w: 0.1, h: 0.1))],
+                                       relations: [], index: SpatialIndex()),
+                meta: meta("pid:9", 9)
+            )
+        }
+        let ping = readLine(fd, timeout: 3)
+        XCTAssertTrue(ping.contains(#""event":"ping""#),
+                      "dead-reap ping must fire under masked churn, got: \(ping)")
+
+        // Matching-region bump: frame event still arrives on the same fd.
+        model.upsert(
+            appKey: "pid:1",
+            output: PipelineOutput(entities: [entity("near", rect: NormRect(x: 0.6, y: 0.2, w: 0.1, h: 0.1))],
+                                   relations: [], index: SpatialIndex()),
+            meta: meta("pid:1", 1)
+        )
+        let event = readLine(fd, timeout: 3)
+        XCTAssertTrue(event.contains(#""event":"frame""#), "got: \(event)")
+        // Close LAST: any further model bump would make the loop write to the
+        // closed fd (SIGPIPE in the test process — the daemon ignores it).
         close(fd)
     }
 }

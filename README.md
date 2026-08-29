@@ -50,12 +50,15 @@ scripts/uninstall-gvgl-launchagent.sh
 
 ```bash
 python3 client/gvgl_query.py status                          # 守护进程状态
+python3 client/gvgl_query.py map                             # 象限地图（每屏 2×2，agent 首次拉取）
 python3 client/gvgl_query.py list                            # 桌面概览（App/窗口/显示器/CG 校验）
 python3 client/gvgl_query.py query --role AXButton --label 登录 --pixels
 python3 client/gvgl_query.py query --role AXButton --label 登录 --top 3 --json
-python3 client/gvgl_query.py query --role AXButton --cell r1c2 --json   # 网格预过滤
+python3 client/gvgl_query.py query --display 3 --region q4 --role AXWindow   # 某块屏的某象限
+python3 client/gvgl_query.py query --role AXButton --label 登录 --cell r1c2 --json   # 网格预过滤
 python3 client/gvgl_query.py query --role AXButton --reference pid:123:0-1 --relation right-of
 python3 client/gvgl_query.py subscribe --pull                # 推送订阅 + 增量拉取
+python3 client/gvgl_query.py subscribe --regions d1q2 sys    # 象限掩码订阅（V5.1）
 python3 client/gvgl_query.py watch --interval 0.5            # 轮询观察 version（备选）
 ```
 
@@ -71,6 +74,7 @@ Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几
 {"method":"get_frame"}                              → {"result": GVGLFrame（scene 树）}
 {"method":"get_frame","app":"pid:123"}              → 单 App 过滤帧
 {"method":"get_frame","depth":2}                    → 按层剪枝（prunedChildCount 标注）
+{"method":"get_map"}                                → 粗粒度象限地图（displays+windows+象限/zIndex，V5）
 {"method":"get_frame","since":123}                  → 增量：no_change / changed+changed_apps+frame
 {"method":"subscribe"}                              → 长连接推送版本事件（frame/ping）
 {"method":"get_status"}                             → {"result": {...}}
@@ -79,5 +83,13 @@ Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几
 ## 测试
 
 ```bash
-swift test        # 104 个单测：几何/拓扑/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）
+swift test        # 124 个单测：几何/显示空间/拓扑/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）
 ```
+
+## 几何审计（真机不变量检查）
+
+```bash
+python3 scripts/audit_geometry.py     # 拉取实时帧，校验硬性不变量（重复 ID/非有限坐标/零尺寸）
+                                      # 与信息性指标（AX 结构性几何奇异，见脚本头注释）
+```
+

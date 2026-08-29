@@ -25,7 +25,7 @@
 | 3 | §5.1 唯一接口 GET /frame | 新增 get_status（诊断）、subscribe/since（用户批准的路线图 V1.6-1） | ✅ 用户批准（路线图） |
 | 4 | §3.1 3.3/3.4 near/aligned 所有实体两两 | 已恢复：每 App 流水线内全局两两（同窗窗口空间、跨窗屏幕空间）；方向关系按 §3.2 同一父窗口内全量判定。**跨 App 对不生成**（原始文档捕获单元 = 单目标 App，见 §3.1 Step 0） | ✅ 已对齐 |
 | 5 | §2.5 near 阈值 0.05；§3.1 方向关系无距离裁剪 | 保留原始阈值与全量判定；**仅保留输出硬上限**（每窗口组 500 / 每 App 全局 5000，inside/contains 除外） | ⚠️ 工程必要：实测 Chrome 密集页无上限时单帧数百 MB、序列化秒级，违反 §6.3 性能目标 |
-| 6 | §1.3 不包含"多屏幕复杂投影（V1 只支持主屏）"；§2.2 除以主屏尺寸 | 坐标一律主屏归一化（原始公式，次屏元素为负/超界坐标）；`screen.displays[]`/`displayID` 仅作信息元数据，不影响几何语义 | ✅ 已对齐（元数据为附加字段） |
+| 6 | §1.3 不包含"多屏幕复杂投影（V1 只支持主屏）"；§2.2 除以主屏尺寸 | 坐标一律主屏归一化（原始公式，次屏元素为负/超界坐标）；`screen.displays[]`/`displayID` 仅作信息元数据，不影响几何语义。**V5 修订（用户批准，2026-08-25："以几何象限呈现桌面"）**：Screen Space 保持主屏归一化（执行路径不变），新增 **Display Space**（`geometry.display`，元素所在物理屏归一化）；`region`/`region9` 象限标签改由 Display Space 派生——副屏元素不再是 q1/q3 垃圾标签 | ✅ 已对齐（V5：象限按所在屏，全局坐标语义不变） |
 | 7 | §6.2 不融合 CGWindow（V1 单一 AX 数据源） | CGWindowProbe 默认关闭（--cg-check 开启），默认链路纯 AX | ✅ 已对齐 |
 | 8 | §3.1 Step 4 空间索引 by_region/by_role/by_window 线性扫描 | 默认线性（gridSize 0，帧结构同原始：无网格键）；`--index-grid N` 可选网格扩展 | ✅ 已对齐（默认） |
 | 9 | §4.3 失败模式 ax_weak（有元素无标题 → 元素摘要列表） | 客户端 query 实现 ax_weak 状态 + elements 摘要 | ✅ 已补齐 |
@@ -77,6 +77,10 @@ Quartz 全局显示坐标——**原点左上、Y 轴向下**，与 CGWindow 边
 转换 2b Screen Space → Local Space（相对最近实体祖先的 Screen rect，V3）
     local.x = (e.x - p.x) / p.w ；local.y = (e.y - p.y) / p.h
     local.w = e.w / p.w ；local.h = e.h / p.h
+转换 2c Quartz 像素 → Display Space（相对所在物理屏，V5）
+    display.x = (rect.x - d.x) / d.w
+    display.y = (rect.y - d.y) / d.h
+    region/region9 象限标签由 Display Space 中心派生（每屏自己的象限）
 转换 3  Screen Space → 物理像素（执行时，Quartz 系）
     pixelX = centerX * screenW
     pixelY = centerY * screenH
@@ -102,9 +106,9 @@ screen space。坐标允许超出 [0,1]（次屏/负坐标）——原始文档�
 | `entityParentID` | 最近实体祖先 id（`inside` 关系依据） |
 | `windowID` / `appID` / `pid` / `displayID` | 归属：所属窗口实体、App（"pid:NNN"）、进程、物理显示器（元数据） |
 | `zIndex`（V3） | 全局前后序（0 = 最前），仅窗口实体、仅 on-screen 当前 Space；其余为 nil |
-| `geometry.screen/window/local` | 三层归一化 Rect（screen 主屏归一化；window 相对所属窗口；local 相对最近实体祖先，V3 落地） |
+| `geometry.screen/window/local/display` | 四层归一化 Rect（screen 主屏归一化；window 相对所属窗口；local 相对最近实体祖先，V3；display 相对所在物理屏，V5） |
 | `geometry.centerX/centerY/area/aspect` | 派生量 |
-| `geometry.region`（q1~q4）/ `geometry.region9` | 空间标签，由 screen 中心计算 |
+| `geometry.region`（q1~q4）/ `geometry.region9` | 空间标签，由 **Display Space** 中心计算（V5：每屏自己的象限） |
 
 ### 3.2 Relation
 
@@ -262,6 +266,12 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`），NDJSON 一行一答；`subs
 → {"method":"get_frame"}                       ← {"result": GVGLFrame}（V4 场景图）
 → {"method":"get_frame","app":"pid:123"}       ← 单 App 过滤帧
 → {"method":"get_frame","depth":2}             ← V4：按层剪枝（prunedChildCount 标注）
+→ {"method":"get_map"}                         ← V5：粗粒度象限地图 DesktopMap
+                                                 {version, displays[{id,index,x,y,width,height,scaleFactor}],
+                                                  windows[{id,appKey,appName,title,display,
+                                                           rect(显示空间),region,region9,zIndex,
+                                                           frontmost}]（zIndex 序，前台在前）,
+                                                  frontmostApp, status}——KB 级，agent 首次拉取
 → {"method":"get_frame","since":123}           ← 增量拉取：
                                                  {"result":{"event":"no_change","version":123}}
                                                  或 {"result":{"event":"changed","version":N,
@@ -318,8 +328,8 @@ Sources/GVGLSync/   半同步引擎
 Sources/GVGLServer/  UDS 服务（get_frame/since/subscribe 推送/get_status）
 Sources/gvgl/       守护进程入口（参数/信号/显示器枚举）
 client/gvgl_query.py 参考客户端（status/frame/list/query/subscribe/watch + --json/--cell）
-scripts/             launchd 安装/卸载脚本（V2-5）
-Tests/              104 个单测（不依赖真实 AX）
+scripts/             launchd 安装/卸载脚本（V2-5）+ audit_geometry.py 真机几何审计（V4.1）
+Tests/              124 个单测（不依赖真实 AX）
 ```
 
 ## 11. 运行参数
@@ -402,6 +412,55 @@ Tests/              104 个单测（不依赖真实 AX）
 | 3 | **`get_frame?depth=N` 按层剪枝**：prunedChildCount 标注，概览体积大幅收敛（实测 823 实体 → depth=1 仅 143 根）；物化缓存按 depth 分键 | ✅ 已实现 |
 | 4 | **消费方全量迁移**：Python 客户端（flatten/评分/list）、GVGLQuery、gvglui（画布/侧栏/详情面板"层次"视图） | ✅ 已实现 |
 
+### V4.1（几何审计驱动的正确性修复，2026-08-25）
+
+真机审计（`scripts/audit_geometry.py` 前身）在双屏 103 App 实况帧上暴露四类缺陷，全部修复并有回归测试：
+
+| # | 项 | 状态 |
+| :--- | :--- | :--- |
+| 1 | **场景图重复实体 ID**（实测 ZCode/Electron 帧 20 个）：per-window 子树重捕时，嵌套窗口（Sheet/Drawer/Electron 内层 AXWindow）实体的 `windowID` 指向嵌套窗口而非顶层窗口，旧 keep 过滤只比对顶层 windowID → 旧副本保留 + 新副本加入，同一路径 ID 出现两次。修复：keep 三重过滤（子树 ID 集合 + 捕获窗口路径命名空间 + windowID 相等）| ✅ 已修复 |
+| 2 | **同 ID 崩溃风险**：Pipeline/Topology/QueryEngine/UI 详情面板共 5 处 `Dictionary(uniqueKeysWithValues:)`，快照内路径重复（Electron 树在遍历中变动）会直接 trap 整个守护进程。修复：全部改 uniquing 变体 + Pipeline 实体提取"首个访问者胜"去重 + DesktopModel.upsert 模型边界去重兜底 | ✅ 已修复 |
+| 3 | **副屏 zIndex 系统性失效**：`pixelCenter` 把主屏归一化坐标又叠加副屏 origin/尺寸（双重偏移），副屏窗口与 CG 窗口的 24px 中心匹配必然失败。修复：逆变换严格按归一化基底（center × 主屏尺寸），实测副屏 ZCode 窗口 zIndex=7 正确恢复 | ✅ 已修复 |
+| 4 | **IDStabilizer 重键冲突**：自匹配（路径未变）不消耗 `used`，重复标题的兄弟元素可重键到仍存活的 ID 上；`remapped(by:)` 改两遍裁决（保留自身 ID 者优先占位，冲突重键丢弃） | ✅ 已修复 |
+| 5 | **窗口合并索引不一致**：`mergeWindow` 重建索引用默认 gridSize=4，而引擎默认 0（线性）→ 窗口移动后帧索引形态在 4×4 网格与线性间跳变。修复：透传引擎 gridSize | ✅ 已修复 |
+| 6 | **SceneTree 防御**：重复 ID 实体去重（首现胜）+ 自父链接（重键伪迹）降级为根而非静默成环 | ✅ 已修复 |
+
+审计的**信息性**发现（非缺陷，AX 结构即如此，守护进程如实上报不"纠正"）：Terminal 的
+AXTextArea frame 覆盖整个回滚缓冲（归一化 y 可达 -180）；输入法候选面板注入宿主 App
+菜单栏子树；MenuBarAgent 把一块屏的菜单栏嵌在另一块屏的窗口下。硬性不变量
+（重复 ID / 非有限坐标 / 零尺寸）在 103 App 实况下保持 0，跨 800+ 版本稳定。
+
+### V5（几何象限桌面，2026-08-25）
+
+用户决策升级基线："为 agent 创建虚拟几何桌面，以几何象限呈现桌面"。核心是**空间寻址
+体系**——agent 先拿 KB 级象限地图，再按 屏→象限→App→窗口→控件 逐层下钻。
+
+| # | 项 | 状态 |
+| :--- | :--- | :--- |
+| 1 | **Display Space（转换 2c）**：`geometry.display` = 元素所在物理屏归一化 rect（中心定屏，无 displays 信息时回退 screen space）；Screen Space 保持主屏归一化（执行路径 `toPixels` 语义零变化）；旧帧解码兼容（缺 display 键回退 screen） | ✅ 已实现 |
+| 2 | **象限按所在屏重算**：`region`/`region9` 由 Display Space 中心派生。修复双屏失义：副屏元素从"恒 q1/q3 垃圾"变为真实所在屏象限（实测副屏 ZCode 全屏窗 → q4、菜单栏条带 → q2）；`index.byRegion` 随之自动一致 | ✅ 已实现 |
+| 3 | **`get_map` 粗粒度地图**：displays（id/index/像素 rect/主屏标记）+ 全部顶层窗口（Display Space rect + 象限 + zIndex 全局前后序 + frontmost 标记，zIndex 序输出）。从物化帧派生，毫秒级、无 AX 调用——agent 的"小地图"，之后 `query --display N --region qK` / `get_frame?app=` 下钻 | ✅ 已实现 |
+| 4 | **查询体系对齐**：GVGLQuery `QueryParams.display`（CG display id 过滤）+ Python 客户端 `map` 命令（每屏 2×2 象限 ASCII 地图）与 `query --display`；UI 详情面板展示 display 层几何 | ✅ 已实现 |
+
+空间寻址语义（消费方契约）：**"哪块屏（display id）× 哪个象限（q1~q4/九宫格）× 哪个
+App/窗口（appKey/windowID）× 什么角色/文本（role/label）"** 四级定位，每级都有独立的
+过滤键；全部只读，零系统侵入。
+
+### V5.1（象限稳定性与订阅路由，2026-08-25）
+
+象限成为 agent 的空间锚点后，两个直接后果被落地：锚点不能抖动（滞后带）、事件应能按
+锚点路由（象限掩码订阅）。
+
+| # | 项 | 状态 |
+| :--- | :--- | :--- |
+| 1 | **象限标签滞后带（空间锚点稳定）**：窗口中心停在象限边界附近时，轻微抖动不再引起 q1↔q2 标签翻转。`DesktopModel.regionHysteresis`（默认 0.02 显示空间归一化，≈主屏 69px；0 关闭）：同 id 同 display 的实体，标签翻转仅当中心越过分隔边界超过带宽；四象限（边界 0.5）与九宫格（边界 1/3、2/3）按轴独立判定。**矩形保持精确**——只有标签是粘性的；换屏（displayID 变化）立即按新屏重算，不继承旧标签 | ✅ 已实现 |
+| 2 | **象限分桶变更日志**：每次 upsert 对前后实体集做 diff（Entity 全等比较），新增/变更实体按新位置入桶、移除实体按旧位置入桶，桶键 `d<displayID><region>`（如 `d1q2`；无 displayID 记 d0）；frontmost 变化记 `sys` 桶；removeApp 记被清空的桶。`changedRegions(after:)` 合并返回 | ✅ 已实现 |
+| 3 | **象限掩码订阅**：`subscribe {"regions":["d1q2","sys"]}`——服务端只推送触及掩码桶的版本变更（游标照常前进，静默跳过不匹配事件）；推送事件新增 `changed_regions` 字段。agent 监听"1 号屏右上角"不再收到全桌面的每次抖动 | ✅ 已实现 |
+| 4 | **客户端对齐**：Python `subscribe --regions d1q2 d2q4 sys` 透传掩码，输出行含 changed_regions | ✅ 已实现 |
+
+掩码订阅语义注意：被掩码滤掉的版本号不会推送，`since` 增量拉取仍返回完整帧（掩码只影响
+推送，不影响数据完整性）；`sys` 桶（frontmost 变化）需显式加入掩码才会收到。
+
 ## 14. 构建与运行
 
 ```
@@ -412,5 +471,6 @@ python3 client/gvgl_query.py list
 python3 client/gvgl_query.py query --role AXButton --label 登录 --pixels
 python3 client/gvgl_query.py query --role AXButton --reference pid:xxx:0-1 --relation right-of
 python3 client/gvgl_query.py watch --interval 0.5
-swift test                                    # 104 个单测
+swift test                                    # 124 个单测
+python3 scripts/audit_geometry.py             # 真机几何审计（硬性不变量 + 信息性 AX 奇异）
 ```

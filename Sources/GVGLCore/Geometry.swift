@@ -38,6 +38,20 @@ public struct CoordinateComputer: Sendable {
         )
     }
 
+    /// Quartz pixel rect -> Display Space norm rect (V5): relative to the
+    /// physical display containing the element. Quadrant labels and per-display
+    /// reasoning use this space; Screen Space stays global main-normalized so
+    /// the execution path (`toPixels`) is unchanged.
+    public func displayNorm(_ rect: CGRect, display: DisplayInfo) -> NormRect {
+        guard display.width > 0, display.height > 0 else { return .zero }
+        return NormRect(
+            x: (rect.minX - display.x) / display.width,
+            y: (rect.minY - display.y) / display.height,
+            w: rect.width / display.width,
+            h: rect.height / display.height
+        )
+    }
+
     /// Screen Space norm rect -> Quartz physical pixel point (top-left origin).
     /// Conversion 3 in the design doc; ready for CGEvent/cliclick without flip.
     public func toPixels(centerOf rect: NormRect) -> (x: Double, y: Double) {
