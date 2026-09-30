@@ -74,6 +74,41 @@ final class DesktopModelTests: XCTestCase {
         XCTAssertEqual(model.frame(screen: screen).status, .unavailable)
     }
 
+    /// Writing the same status again changes nothing, so it must not bump the
+    /// version. Without this, a daemon retrying an app it cannot read (no
+    /// Accessibility permission, or a persistently erroring app) bumps the
+    /// version on every retry — and every bump is a "changed" event carrying a
+    /// full multi-MB frame to every subscriber, forever, with nothing changed.
+    func testSetStatusWithUnchangedStatusDoesNotBumpVersion() {
+        let model = DesktopModel()
+        model.upsert(appKey: "pid:1", output: output("e1"), meta: meta("pid:1", 1, "A"))
+        let base = model.version   // upsert forces .synced
+
+        model.setStatus(appKey: "pid:1", pid: 1, .permissionDenied)
+        let afterRealChange = model.version
+        XCTAssertGreaterThan(afterRealChange, base, "a real status change must bump")
+
+        // The reconciler retries an unreadable app every cooldown window; each
+        // retry re-writes the same status. None of those may bump.
+        for _ in 0..<10 {
+            model.setStatus(appKey: "pid:1", pid: 1, .permissionDenied)
+        }
+        XCTAssertEqual(model.version, afterRealChange,
+                       "re-writing the same status is not a mutation")
+    }
+
+    /// Same rule on the placeholder path: the first call creates the state
+    /// (a real change), the second writes the identical status and must not.
+    func testSetStatusPlaceholderPathDoesNotChurnVersion() {
+        let model = DesktopModel()
+        model.setStatus(appKey: "pid:9", pid: 9, .warming)
+        let afterCreate = model.version
+        XCTAssertGreaterThan(afterCreate, 0, "creating observable state is a change")
+
+        model.setStatus(appKey: "pid:9", pid: 9, .warming)
+        XCTAssertEqual(model.version, afterCreate, "identical placeholder write is not a mutation")
+    }
+
     func testVersionMonotonic() {
         let model = DesktopModel()
         let v0 = model.version

@@ -143,6 +143,13 @@ public final class DesktopModel: @unchecked Sendable {
         bumpVersionLocked(appKey, regions: Self.changedRegionBuckets(previous: previous, current: stabilized))
     }
 
+    /// Records an app's sync status. No-op when the status is already that
+    /// value (no version churn), mirroring `setFrontmost`: the version tracks
+    /// real model mutations, and writing an identical value is not one. Bumping
+    /// anyway makes a daemon that keeps retrying an unreadable app (no
+    /// Accessibility permission, or a persistently erroring one) emit a
+    /// "changed" event — carrying a full frame to every subscriber — on every
+    /// retry, forever, with nothing actually changed.
     public func setStatus(appKey: String, pid: Int32, _ status: SyncStatus) {
         lock.lock()
         defer { lock.unlock() }
@@ -156,6 +163,7 @@ public final class DesktopModel: @unchecked Sendable {
             bumpVersionLocked(appKey)
             return
         }
+        guard state.meta.status != status else { return }
         state.meta.status = status
         apps[appKey] = state
         bumpVersionLocked(appKey)
