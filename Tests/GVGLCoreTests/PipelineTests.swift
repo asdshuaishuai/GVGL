@@ -538,4 +538,26 @@ final class PipelineTests: XCTestCase {
         // displayID metadata still resolves to the physical display.
         XCTAssertEqual(out.entities.first { $0.id == "\(key):0" }?.displayID, 2)
     }
+
+    /// Actions come from the AX **Action API** (AXUIElementCopyActionNames),
+    /// not the `AXActions` attribute: the attribute path returns
+    /// kAXErrorUnsupportedAttribute (-25205) on real elements, so the previous
+    /// `value as? [String]` could never match and every entity in every frame
+    /// reported zero actions. This test cannot call the AX API (that needs a
+    /// live element), so it pins the two things that are ours to keep correct:
+    /// the data reaches entities, and the role gate stays narrow.
+    func testActionsFlowToEntitiesAndRoleGateStaysNarrow() {
+        // Interactive roles must be gated in, otherwise every node in a dense
+        // tree would pay an extra AX round-trip for a guaranteed-empty result.
+        for role in ["AXButton", "AXLink", "AXMenuItem", "AXCheckBox", "AXTextField"] {
+            XCTAssertTrue(Snapshotter.rolesWithActions.contains(role), "\(role) should be queried for actions")
+        }
+        // Container/text roles never carry actions; widening the gate here is
+        // the regression that would blow the capture budget.
+        for role in ["AXStaticText", "AXCell", "AXRow", "AXImage", "AXGroup",
+                     "AXWindow", "AXUnknown", "AXList", "AXTable"] {
+            XCTAssertFalse(Snapshotter.rolesWithActions.contains(role),
+                           "\(role) is not interactive; querying it wastes an AX round-trip")
+        }
+    }
 }

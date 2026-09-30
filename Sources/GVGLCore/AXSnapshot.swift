@@ -365,9 +365,13 @@ public final class Snapshotter: @unchecked Sendable {
             kAXValueAttribute, kAXSubroleAttribute, kAXFocusedAttribute,
             kAXSelectedAttribute, kAXPlaceholderValueAttribute,
         ]
-        if config.includeActions {
-            names.append("AXActions")
-        }
+        // NOTE: "AXActions" is deliberately NOT in this batch. Asking for it
+        // via AXUIElementCopyAttributeValue fails with
+        // kAXErrorUnsupportedAttribute (-25205) on real elements, and when it
+        // does return, it is an array of {name, selector} dictionaries — never
+        // a [String], so the old `value as? [String]` could never succeed.
+        // Net effect was actions==[] for every entity in the frame. Actions
+        // come from AXUIElementCopyActionNames below.
 
         var values: CFArray?
         let err = AXUIElementCopyMultipleAttributeValues(
@@ -404,8 +408,6 @@ public final class Snapshotter: @unchecked Sendable {
                 batch.size = cgSize(from: value)
             case kAXChildrenAttribute:
                 batch.children = elements(from: value)
-            case "AXActions":
-                batch.actions = (value as? [String]) ?? []
             case kAXValueAttribute:
                 batch.value = Self.valueString(from: value)
             case kAXSubroleAttribute:
@@ -420,8 +422,40 @@ public final class Snapshotter: @unchecked Sendable {
                 break
             }
         }
+        if config.includeActions, let role = batch.role, Self.rolesWithActions.contains(role) {
+            batch.actions = Self.actionNames(of: element)
+        }
         return batch
     }
+
+    /// Enumerable actions for an element, via the dedicated Action API.
+    ///
+    /// The Action API is the only correct source: the `AXActions` attribute
+    /// path is unsupported (-25205) on the elements that matter and returns a
+    /// shape (`[[String: String]]`) that the old `[String]` cast could never
+    /// match, which is why every entity in every frame reported zero actions —
+    /// silently starving both the topology score and the semantic action bridge.
+    ///
+    /// Cost: one AX round-trip per element, so it is gated on `includeActions`
+    /// and restricted to roles that can meaningfully carry actions.
+    static func actionNames(of element: AXUIElement) -> [String] {
+        var cfNames: CFArray?
+        guard AXUIElementCopyActionNames(element, &cfNames) == .success,
+              let names = cfNames as? [String], !names.isEmpty else { return [] }
+        return names
+    }
+
+    /// Roles whose elements can carry actions. Text, images, cells and
+    /// containers never do, and asking every node in a dense tree (a web page
+    /// is thousands of static-text nodes) would add thousands of AX
+    /// round-trips per sweep for guaranteed-empty results.
+    static let rolesWithActions: Set<String> = [
+        "AXButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton",
+        "AXPopUpButton", "AXComboBox", "AXTextField", "AXTextArea",
+        "AXSecureTextField", "AXSlider", "AXIncrementor", "AXStepper",
+        "AXLink", "AXDisclosureTriangle", "AXTabButton", "AXSegmentedControl",
+        "AXToolbarButton", "AXSwitch", "AXRatingIndicator",
+    ]
 
     /// AXValue arrives in many shapes (String / NSNumber / CFBoolean /
     /// NSAttributedString / AXValue). Coerce to a short display string and
