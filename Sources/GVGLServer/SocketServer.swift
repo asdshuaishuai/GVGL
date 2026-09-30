@@ -34,6 +34,11 @@ public final class SocketServer: @unchecked Sendable {
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var running = false
+    /// Live push subscriptions, each parked on its own thread (see
+    /// `pushThread`). Bounded so that a client opening thousands of
+    /// subscriptions is refused rather than exhausting the process.
+    private var activeSubscriptions = 0
+    private let maxSubscriptions = 256
 
     public init(socketPath: String, model: DesktopModel, engine: SyncEngine, verbose: Bool = false) {
         self.socketPath = socketPath
@@ -43,6 +48,15 @@ public final class SocketServer: @unchecked Sendable {
     }
 
     public func start() throws {
+        // This server writes to client sockets for as long as a subscription
+        // lives. A client that disconnects mid-write turns that into SIGPIPE,
+        // whose default action kills the whole process — the daemon would die
+        // because an agent closed its connection. The policy belongs to
+        // whoever owns the socket I/O, so set it here rather than relying on
+        // every embedder to repeat it (writes then return EPIPE and the push
+        // loop exits cleanly).
+        signal(SIGPIPE, SIG_IGN)
+
         let dir = (socketPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
             atPath: dir, withIntermediateDirectories: true
@@ -116,7 +130,11 @@ public final class SocketServer: @unchecked Sendable {
     }
 
     private func handleConnection(_ fd: Int32) {
-        defer { close(fd) }
+        // Ownership moves to the push thread when the client subscribes; until
+        // then this function closes it. Closing unconditionally here would
+        // yank the fd out from under a live subscription.
+        var ownsFD = true
+        defer { if ownsFD { close(fd) } }
 
         var timeout = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
@@ -139,7 +157,15 @@ public final class SocketServer: @unchecked Sendable {
             _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, bytes.count) }
         }
         if let subscription {
-            pushLoop(fd, from: subscription.lastVersion)
+            // The push loop blocks for the connection's whole lifetime, so it
+            // must NOT run on `queue`: a long-lived subscription would pin one
+            // of GCD's ~64 worker threads — the same pool that accepts and
+            // serves requests — and enough subscribers would starve the daemon
+            // completely (measured: wedged at 63, no error, no log). Hand it a
+            // dedicated thread and the request path keeps its own pool.
+            ownsFD = false   // the push thread closes fd when its loop ends
+            pushThread(fd, subscription)
+            return
         }
         if verbose {
             fputs("gvgl: served \(requestLine.prefix(60)) -> \(response.count) bytes in \(Int(Date().timeIntervalSince(started) * 1000))ms\n", stderr)
@@ -148,13 +174,67 @@ public final class SocketServer: @unchecked Sendable {
 
     // MARK: - Push subscription
 
+    /// Runs one subscription's push loop on its own thread and takes over `fd`
+    /// (closing it when the loop ends). Threads are pooled per real subscriber
+    /// rather than per shared-pool slot; the count is capped by
+    /// `maxSubscriptions` so overload is refused loudly instead of silently
+    /// wedging the daemon.
+    private func pushThread(_ fd: Int32, _ subscription: Subscription) {
+        let thread = Thread { [weak self] in
+            defer { close(fd) }
+            defer { self?.releaseSubscription() }
+            self?.pushLoop(fd, from: subscription.lastVersion, mask: subscription.mask)
+        }
+        thread.name = "gvgl.push"
+        // Left at the platform default (512K) deliberately: these threads are
+        // almost entirely parked in waitForVersion, so they are cheap in wall
+        // time, and shrinking the stack to save virtual address space would
+        // trade a real risk (overflow inside a deep JSON encode at high
+        // subscriber counts) for a benefit this workload does not need.
+        thread.stackSize = 512 * 1024
+        thread.start()
+    }
+
+    /// Reserves one subscription slot. Returns false at the cap — callers must
+    /// then refuse the request rather than accept work they cannot run.
+    private func reserveSubscription() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeSubscriptions < maxSubscriptions else { return false }
+        activeSubscriptions += 1
+        return true
+    }
+
+    private func releaseSubscription() {
+        lock.lock()
+        activeSubscriptions -= 1
+        lock.unlock()
+    }
+
     /// Long-lived push loop: writes one NDJSON event line per model version
-    /// bump. Ends when the client goes away (EPIPE) or the loop is interrupted.
-    private func pushLoop(_ fd: Int32, from initial: UInt64) {
+    /// bump. With a region mask (V5.1), only bumps touching one of the masked
+    /// buckets are pushed — an agent watching "display 1's q2" doesn't hear
+    /// about every other region's churn. Ends when the client goes away
+    /// (EPIPE) or the loop is interrupted.
+    private func pushLoop(_ fd: Int32, from initial: UInt64, mask: Set<String>?) {
         var last = initial
         var quietTimeouts = 0
+        // Masked-out bumps still reset quietTimeouts, so the quiet-path ping
+        // never fires under constant churn — without this a dead masked
+        // client would leak its fd forever (EPIPE only happens on write).
+        // Counts VERSIONS: waitForVersion can burst-return many bumps in one
+        // wake-up, so iteration counting would never reach the threshold.
+        var maskedVersions: UInt64 = 0
         while true {
-            guard let newVersion = model.waitForVersion(after: last, timeout: 5) else {
+            // stop() doesn't track client fds, so without this every parked
+            // push thread would outlive the server and keep pinging for up to
+            // a minute after shutdown.
+            lock.lock()
+            let serverRunning = running
+            lock.unlock()
+            guard serverRunning else { return }
+
+            guard model.waitForVersion(after: last, timeout: 5) != nil else {
                 // No change within the window. Ping occasionally so a dead
                 // client on a quiet desktop is detected and reaped.
                 quietTimeouts += 1
@@ -165,9 +245,27 @@ public final class SocketServer: @unchecked Sendable {
                 continue
             }
             quietTimeouts = 0
-            let apps = model.changedApps(after: last)
-            last = newVersion
-            let event = PushEvent(event: "frame", version: newVersion, changed_apps: apps)
+            let changes = model.changes(after: last)
+            let currentVersion = changes.version
+            let consumed = currentVersion - last
+            last = currentVersion
+            if let mask, mask.isDisjoint(with: changes.regions) {
+                maskedVersions += consumed
+                if maskedVersions >= 12 {
+                    maskedVersions = 0
+                    let ping = "{\"event\":\"ping\",\"version\":\(model.version)}\n"
+                    guard Self.writeLine(fd, ping) else { return }
+                }
+                continue // masked out: advance the cursor, stay silent
+            }
+            maskedVersions = 0
+            let event = PushEvent(
+                event: "frame",
+                version: currentVersion,
+                changed_apps: changes.apps,
+                changed_regions: changes.regions,
+                requires_full_refresh: changes.requiresFullRefresh
+            )
             guard let payload = try? JSONEncoder.gvgl.encode(event),
                   let line = String(data: payload, encoding: .utf8) else { return }
             guard Self.writeLine(fd, line + "\n") else { return }
@@ -189,28 +287,40 @@ public final class SocketServer: @unchecked Sendable {
         var since: UInt64?
         /// V4: scene-tree depth limit (levels below each app root).
         var depth: Int?
+        /// V5.1: region-bucket mask ("d<displayID>q<region>", e.g. "d1q2";
+        /// "sys" for frontmost changes). Only version bumps touching one of
+        /// these buckets are pushed.
+        var regions: [String]?
     }
 
     private struct Subscription {
         var lastVersion: UInt64
+        var mask: Set<String>?
     }
 
     private struct ChangedResult: Codable {
         var event: String
         var version: UInt64
         var changed_apps: [String]
+        var requires_full_refresh: Bool
         var frame: GVGLFrame
     }
 
     private struct SubscribedResult: Codable {
         var event: String
         var version: UInt64
+        /// True when the requested cursor was not the current version (stale
+        /// or from a previous daemon incarnation). The client holds a
+        /// desynced view and must re-pull rather than apply deltas.
+        var requires_full_refresh: Bool
     }
 
     private struct PushEvent: Codable {
         var event: String
         var version: UInt64
         var changed_apps: [String]
+        var changed_regions: [String]
+        var requires_full_refresh: Bool
     }
 
     private func route(_ line: String) -> (String, Subscription?) {
@@ -233,7 +343,11 @@ public final class SocketServer: @unchecked Sendable {
             if let since = request.since {
                 // Incremental pull: report only what changed since `since`.
                 let result = model.frameResult(screen: engine.screen, filterApp: request.app, since: since, depth: depth)
-                if result.frame.version <= since {
+                // Only a genuinely up-to-date cursor is a no-op. An expired or
+                // future cursor must still deliver the (complete) frame with
+                // requires_full_refresh, otherwise the client stays stale
+                // forever believing it is up to date.
+                if result.frame.version == since, !result.requiresFullRefresh {
                     let text = """
                     {"result":{"event":"no_change","version":\(since)}}
                     """
@@ -243,6 +357,7 @@ public final class SocketServer: @unchecked Sendable {
                     event: "changed",
                     version: result.frame.version,
                     changed_apps: result.changedApps,
+                    requires_full_refresh: result.requiresFullRefresh,
                     frame: result.frame
                 )
                 guard let payload = try? JSONEncoder.gvgl.encode(["result": changed]),
@@ -259,13 +374,47 @@ public final class SocketServer: @unchecked Sendable {
             return (text, nil)
 
         case "subscribe":
-            let initial = request.since ?? model.version
-            let subscribed = SubscribedResult(event: "subscribed", version: model.version)
+            // Reserve the push thread's slot before promising a stream: past
+            // the cap we must say so, not hand back a subscription that would
+            // never be served.
+            guard reserveSubscription() else {
+                return (Self.errorResponse(
+                    "too_many_subscriptions",
+                    "subscription limit reached (\(maxSubscriptions)); retry later"
+                ), nil)
+            }
+            // One atomic read: the acked version and the push cursor must be
+            // the same number, otherwise the client believes it is current at
+            // version N while the loop replays from N-1 (duplicate) or sits
+            // waiting on a version that already passed (silence). A cursor from
+            // a dead daemon incarnation is clamped forward to now, so the
+            // client gets a fresh stream instead of never being woken.
+            let currentVersion = model.version
+            let initial = request.since.map { min($0, currentVersion) } ?? currentVersion
+            let subscribed = SubscribedResult(
+                event: "subscribed",
+                version: currentVersion,
+                requires_full_refresh: request.since.map { $0 != currentVersion } ?? false
+            )
             guard let payload = try? JSONEncoder.gvgl.encode(["result": subscribed]),
                   let text = String(data: payload, encoding: .utf8) else {
                 return (Self.errorResponse("internal", "serialization failed"), nil)
             }
-            return (text, Subscription(lastVersion: initial))
+            return (text, Subscription(lastVersion: initial, mask: request.regions.map(Set.init)))
+
+        case "get_map":
+            guard AXIsProcessTrusted() else {
+                return (Self.errorResponse("permission_denied", "Accessibility permission not granted"), nil)
+            }
+            // Coarse agent minimap (V5): displays + top-level windows in
+            // Display Space with quadrant labels. Derived from the cached
+            // frame — millisecond-scale, no AX calls.
+            let map = model.frame(screen: engine.screen).desktopMap
+            guard let payload = try? JSONEncoder.gvgl.encode(["result": map]),
+                  let text = String(data: payload, encoding: .utf8) else {
+                return (Self.errorResponse("internal", "map serialization failed"), nil)
+            }
+            return (text, nil)
 
         case "get_status":
             let s = engine.status()

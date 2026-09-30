@@ -83,17 +83,30 @@ final class ClientServerTests: XCTestCase {
         _ = try client.getFrame()
         let v = model.version
 
-        let (frame, apps) = try client.getFrameSince(v)
+        let (frame, apps, full1) = try client.getFrameSince(v)
         XCTAssertNil(frame, "no change after version → no_change")
         XCTAssertTrue(apps.isEmpty)
+        XCTAssertFalse(full1, "an exact cursor is a genuine no-op")
 
         model.upsert(appKey: "pid:2",
                      output: PipelineOutput(entities: [makeEntity("e2")], relations: [], index: SpatialIndex()),
                      meta: AppSnapshot(appKey: "pid:2", pid: 2, bundleID: nil, name: "B", status: .synced, capturedAt: Date(), entityCount: 1))
-        let (frame2, apps2) = try client.getFrameSince(v)
+        let (frame2, apps2, full2) = try client.getFrameSince(v)
         XCTAssertNotNil(frame2)
         XCTAssertEqual(frame2?.allEntities.map(\.id), ["e1", "e2"])
         XCTAssertEqual(apps2, ["pid:2"])
+        XCTAssertFalse(full2, "a recent cursor is an ordinary incremental pull")
+    }
+
+    /// A cursor from a dead daemon incarnation must not be served as a quiet
+    /// no-op: the client has to learn it is desynced, or it waits forever on a
+    /// view that will never update again.
+    func testGetFrameSinceFutureCursorReportsFullRefresh() throws {
+        let client = GVGLClient(socketPath: socketPath, timeout: 5)
+        let (frame, apps, requiresFullRefresh) = try client.getFrameSince(999_999)
+        XCTAssertNotNil(frame, "a desynced client still gets a complete frame")
+        XCTAssertTrue(apps.isEmpty, "the skipped mutations cannot be enumerated")
+        XCTAssertTrue(requiresFullRefresh, "client must be told to resync wholesale")
     }
 
     func testLargeFrameRoundtrip() throws {

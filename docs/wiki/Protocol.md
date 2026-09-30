@@ -8,27 +8,92 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`，可用 `GVGL_SOCKET` 环境变
 ```
 → {"method":"get_frame"}                       ← {"result": GVGLFrame}
 → {"method":"get_frame","app":"pid:123"}       ← 单 App 过滤帧
+→ {"method":"get_frame","depth":2}             ← 按层剪枝（V4）
+→ {"method":"get_map"}                         ← 粗粒度象限地图（V5）
 → {"method":"get_frame","since":123}           ← 增量拉取
 → {"method":"subscribe","since":123}           ← 长连接推送
+→ {"method":"subscribe","regions":["d1q2"]}    ← 象限掩码推送（V5.1）
 → {"method":"get_status"}                      ← 守护进程状态
 ```
+
+### get_map 粗粒度象限地图（V5）
+
+agent 的首次拉取（KB 级）：先看"哪块屏哪个象限有哪些窗口"，再按
+`get_frame?app=` / `get_frame?depth=N` 下钻。
+
+```
+{"result":{
+  "version": N, "status": "ok",
+  "displays":[{"id":1,"index":0,"x":0,"y":0,"width":3440,"height":1440,"scaleFactor":2}, ...],
+  "windows":[{"id":"pid:24158:0","appKey":"pid:24158","appName":"ZCode","title":"ZCode",
+              "display":1,               // displays[] 的 index
+              "rect":{"x":0.001,"y":0.028,"w":1.0,"h":0.972},   // Display Space
+              "region":"q4","region9":"rightBottom",
+              "zIndex":3,"frontmost":true}, ...],   // zIndex 序（前台在前）
+  "frontmostApp":"pid:24158"
+}}
+```
+
+- `display` 为 displays[] 的 **index**（0 = 主屏）；查询过滤用 CG display **id**
+  （`query --display`，见 `map` 输出的 `displays[].id`）。
+- `zIndex` 为 nil 表示不在当前 Space / 未匹配 CG（`z?`）。
+- 从物化帧派生，无 AX 调用，毫秒级。
 
 ### get_frame?since 增量拉取
 
 ```
 无变化: {"result":{"event":"no_change","version":123}}
 有变化: {"result":{"event":"changed","version":N,
-                    "changed_apps":[...],"frame":{...}}}
+                    "changed_apps":[...],"requires_full_refresh":false,"frame":{...}}}
 ```
+
+`no_change` 仅在游标**恰好等于**当前版本时返回。`requires_full_refresh`（V5.1）：
+`changed_apps` 无法覆盖被跳过的全部变更时为 `true`——游标早于保留的变更日志
+（512 条环形缓冲溢出），或游标来自上一代守护进程（版本计数器从 0 重启）而领先于
+当前模型。此时 `frame` 仍是**完整快照**，客户端应整体替换本地视图，而不是按
+`changed_apps` 做增量打补丁。
 
 ### subscribe 长连接推送
 
 ```
-{"result":{"event":"subscribed","version":N}}
+{"result":{"event":"subscribed","version":N,"requires_full_refresh":false}}
 之后每 version 变化推送一行：
-{"event":"frame","version":N,"changed_apps":[...]}
+{"event":"frame","version":N,"changed_apps":[...],"changed_regions":["d1q2",...],
+ "requires_full_refresh":false}
 静默期每 60s 一行：{"event":"ping","version":N}
 ```
+
+订阅的确认版本与推送游标取自**同一次原子读**：两者不一致会让客户端以为自己已在
+版本 N，而推送循环却从 N-1 重放（重复）或停在一个早已越过的版本上（永久静默）。
+领先于当前模型的游标会被夹到当前版本——否则该游标永远等不到唤醒，客户端静默卡死。
+
+`changed_regions`（V5.1）：本次变更触及的象限桶 `d<displayID><region>`（如 `d1q2`；
+无 displayID 记 `d0`；frontmost 变化记 `sys`）——新增/变更实体按新位置入桶，移除按旧位置。
+
+**象限掩码订阅**（V5.1）：
+
+```
+→ {"method":"subscribe","regions":["d1q2","d2q4","sys"]}
+```
+
+只推送触及掩码桶的版本变更（游标照常前进，不匹配的事件静默跳过）。被滤掉的版本号
+不推送；`since` 增量拉取不受影响，仍返回完整帧。`sys`（前台 App 变化）需显式加入
+掩码才会收到。
+
+**连接数上限**：
+
+```
+→ {"method":"subscribe"}   （已达上限时）
+← {"error":{"code":"too_many_subscriptions","message":"subscription limit reached (256); retry later"}}
+```
+
+每条订阅占用一个专属线程（**不能**放在处理请求的并发队列上：长连接会永久占住
+GCD 约 64 个 worker 线程，实测订阅数到 63 时守护进程整体静默——不报错、不退出、
+只是再也不响应任何请求）。因此订阅数硬上限 256，超出**显式拒绝**而不是悄悄卡死。
+连接断开后槽位自动归还，实测 512 次订阅生命周期后仍能满额接受。
+
+> 客户端注意：`listen()` backlog 只有 16，**瞬间**打开大量连接可能拿到 EAGAIN。
+> 这是 backlog 的正常行为，重试即可，不是守护进程故障。
 
 ## 错误码
 
@@ -36,6 +101,7 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`，可用 `GVGL_SOCKET` 环境变
 {"error":{"code":"permission_denied","message":"..."}}
 {"error":{"code":"invalid_method","message":"..."}}
 {"error":{"code":"invalid_request","message":"..."}}
+{"error":{"code":"too_many_subscriptions","message":"..."}}
 {"error":{"code":"internal","message":"..."}}
 ```
 
@@ -71,6 +137,17 @@ V4 变更：平铺 `entities[]`/`relations[]`/`apps[]` 下线。包含关系由�
   "children": [Entity]           // 顶层：AXWindow / AXMenuBar / 孤儿实体，自然 AX 序
 }
 ```
+
+`actionProbeFailures`（可选，>0 时才出现）：本次采集里 **AX 操作探测调用报错**的
+次数。非 0 意味着该 App 子树的 `actions` 字段因未知原因不完整，而不是元素本来
+就没有操作——这两者过去都塌缩成空数组，无法区分，正是"字段恒空"型缺陷得以长期
+隐身的根源。正常帧不含此字段。
+
+`capturedAt` = 该 App **最后一次可观测变化**的时间，不是最后一次抓取的时间。
+重抓若结果与上次逐字节相同，不算变化、不递增 version、不推送——校准器每个周期
+都会重抓所有 App，若把"又看了一眼"当成变化，桌面完全静止时 version 也会每秒
+涨 6~7 次，订阅者被多 MB 的帧淹没，增量协议等于形同虚设。需要"抓取新鲜度"请用
+不带 `since` 的 `get_frame`，它总是重新物化。
 
 ### Entity
 

@@ -13,7 +13,33 @@ python3 client/gvgl_query.py subscribe --pull                # 推送订阅 + �
 python3 client/gvgl_query.py watch --interval 0.5            # 轮询观察 version（备选）
 ```
 
+> `--cell` 依赖帧里的**网格索引**，而守护进程默认跑线性索引（`index.gridSize=0`）。
+> 此时 `byGrid` 为空——以前 `--cell` 会静默返回 `not_found`，仿佛那个格子里
+> 真的什么都没有。现在会明确报错并以 **exit 2** 退出，告诉你要么用
+> `--index-grid N` 重启，要么改用 `--region` / `--display`（两种模式都可用）。
+> 格名越界（如 4×4 下的 `r9c9`）同样报错并列出合法值。
+
 - `--cliclick` 打印可执行命令；`--execute` 直接执行（需 `brew install cliclick`）。
+
+## 退出码
+
+| 码 | 含义 |
+| :--- | :--- |
+| 0 | 成功 |
+| 1 | 连不上守护进程，或查询执行失败 |
+| 2 | 查询**不可用**（如 `--cell` 用在线性索引的守护进程上） |
+| 3 | `status` 正常返回，但**辅助功能权限未授予**——stdout 仍是可解析的 JSON，同时 stderr 给出到"系统设置 › 隐私与安全性 › 辅助功能"的具体路径 |
+
+脚本可以据此区分"没查到"（1）与"根本没法查"（2、3）。
+
+想在查询之前就知道权限状态，用守护进程侧的自检命令（同一套退出码约定）：
+
+```bash
+gvgl --check-permission     # granted → 0；denied → 3 + stderr 指引
+```
+
+TCC 授权绑定到二进制路径 + 签名，`swift build` 重新编译后可能静默失效 ——
+详见 [Ops.md](Ops.md#自检gvgl---check-permission)。
 - `--json` 输出机器可读结果（含 `status`/`hits`/`best`/`elements`）。
 - socket 可用 `--socket PATH` 或环境变量 `GVGL_SOCKET` 指定。
 

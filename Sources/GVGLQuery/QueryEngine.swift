@@ -8,17 +8,21 @@ public struct QueryParams: Equatable, Hashable {
     public var label: String?
     public var region: String?
     public var app: String?
+    /// V5: CGDirectDisplayID filter (entities on one physical display).
+    public var display: Int?
     public var refID: String?
     public var refDir: String?
     public var top: Int
 
     public init(role: String? = nil, label: String? = nil, region: String? = nil,
-                app: String? = nil, refID: String? = nil, refDir: String? = nil,
+                app: String? = nil, display: Int? = nil,
+                refID: String? = nil, refDir: String? = nil,
                 top: Int = 5) {
         self.role = role
         self.label = label
         self.region = region
         self.app = app
+        self.display = display
         self.refID = refID
         self.refDir = refDir
         self.top = top
@@ -98,12 +102,17 @@ public enum QueryEngine {
         let entities: [Entity] = params.app.map { app in
             frame.allEntities.filter { $0.appID == app }
         } ?? frame.allEntities
-        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.id, $0) })
+        let byID = Dictionary(entities.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         var candidates = entities
         if let region = params.region {
             let regionSet = Set(frame.index.byRegion[region] ?? [])
             candidates = candidates.filter { regionSet.contains($0.id) }
+        }
+        if let display = params.display {
+            // V5: physical-display filter — quadrant/region queries pair with
+            // this to target one screen ("右上角的那块屏").
+            candidates = candidates.filter { $0.displayID == display }
         }
 
         let refEntity = params.refID.flatMap { byID[$0] }
@@ -180,10 +189,19 @@ public enum QueryEngine {
         }
 
         let area = entity.geometry.area
+        // Calibrated against the observed distribution of pressable elements
+        // on a real desktop (680 samples), not against intuition. The old
+        // bands (0.001 / 0.0005) put 84% of them in the worst bucket — and
+        // disproportionately the *small precise* ones (dialog buttons, list
+        // rows, compact controls), which are exactly what an agent wants to
+        // click. A term stuck at its floor carries no information.
+        //   0.0002  ≈ 31×31 px on 3440×1440 — comfortably clickable
+        //   0.00005 ≈ 16×16 px — small but hittable
+        //   below   — genuinely hard to hit reliably
         let size: Double
-        if area >= 0.001 && area <= 0.05 {
+        if area >= 0.0002 && area <= 0.05 {
             size = 1.0
-        } else if area >= 0.0005 && area <= 0.1 {
+        } else if area >= 0.00005 && area <= 0.2 {
             size = 0.6
         } else {
             size = 0.2
@@ -194,11 +212,23 @@ public enum QueryEngine {
         if entity.enabled { topology += 0.3 }
         if !entity.actions.isEmpty { topology += 0.4 }
 
-        let total = semantic * weights.semantic
-            + roleScore * weights.role
-            + spatial * weights.spatial
-            + size * weights.size
-            + topology * weights.topology
+        // A query that names no reference entity has no spatial criterion at
+        // all — nothing was asked about position, so position is neither
+        // evidence nor a failure. Summing only the remaining 0.75 of weight
+        // while the hit gate is calibrated on a 0...1 score capped a *perfect*
+        // match at 0.75, leaving 0.05 of headroom over the 0.7 gate; an exact
+        // label+role hit on a small control (a standard dialog button scores
+        // 0.2 on size) therefore landed in `ambiguous` for lack of room rather
+        // than for lack of evidence. Normalize by the weight that actually
+        // applies — ordering between candidates is untouched, only the scale.
+        let applicableWeight = (ref == nil) ? (1.0 - weights.spatial) : 1.0
+        let total = (
+            semantic * weights.semantic
+                + roleScore * weights.role
+                + spatial * weights.spatial
+                + size * weights.size
+                + topology * weights.topology
+        ) / applicableWeight
         return (total, [
             "semantic": semantic, "role": roleScore, "spatial": spatial,
             "size": size, "topology": topology,

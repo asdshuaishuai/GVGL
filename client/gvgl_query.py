@@ -11,14 +11,17 @@ Usage:
   gvgl_query.py status
   gvgl_query.py frame [--app pid:123] [--pretty]
   gvgl_query.py list [--verbose] [--json]
+  gvgl_query.py map [--json]                       # V5: coarse quadrant map
   gvgl_query.py query [--role AXButton] [--label 登录] [--region q1]
-                      [--app pid:123] [--right-of ID] [--below ID] [--near ID]
-                      [--top N] [--pixels] [--cliclick] [--execute] [--json]
+                      [--app pid:123] [--display N] [--right-of ID] [--below ID]
+                      [--near ID] [--top N] [--pixels] [--cliclick] [--execute] [--json]
   gvgl_query.py watch [--interval 0.5] [--max 10]
   gvgl_query.py subscribe [--since N] [--pull] [--max 10]
 
 Examples:
+  gvgl_query.py map                                # agent first fetch: minimap
   gvgl_query.py query --role AXButton --label 登录 --top 3 --pixels
+  gvgl_query.py query --display 2 --region q2      # right-top of display 2
   gvgl_query.py query --role AXButton --right-of pid:123:0-1 --cliclick
   gvgl_query.py subscribe --pull          # push events + incremental pulls
 """
@@ -106,9 +109,12 @@ class GVGLClient:
             self._frame = result["frame"]
         return result
 
-    def subscribe(self, since: int | None = None) -> Iterator[dict]:
+    def subscribe(self, since: int | None = None,
+                  regions: list[str] | None = None) -> Iterator[dict]:
         """Long-lived subscription: yields one event dict per line from the
-        daemon until the connection closes."""
+        daemon until the connection closes. `regions` (V5.1) is a server-side
+        bucket mask ("d<displayID>q<region>", e.g. "d1q2"; "sys" for frontmost
+        changes) — only bumps touching a masked bucket are pushed."""
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(None)
         try:
@@ -118,6 +124,8 @@ class GVGLClient:
         req = {"method": "subscribe"}
         if since is not None:
             req["since"] = since
+        if regions:
+            req["regions"] = regions
         s.sendall((json.dumps(req) + "\n").encode())
         buf = b""
         while True:
@@ -257,11 +265,14 @@ def score_entity(e: dict, role: str | None, label: str | None,
     elif ref is not None and not ref_dir and e["id"] == ref["id"]:
         spatial = 1.0
 
-    # SizeScore
+    # SizeScore — bands calibrated against the observed distribution of
+    # pressable elements on a real desktop (680 samples); the old bands put
+    # 84% of them in the worst bucket, disproportionately small precise ones.
+    # Must stay identical to QueryEngine.score in Sources/GVGLQuery.
     area = e["geometry"]["area"]
-    if 0.001 <= area <= 0.05:
+    if 0.0002 <= area <= 0.05:
         size = 1.0
-    elif 0.0005 <= area <= 0.1:
+    elif 0.00005 <= area <= 0.2:
         size = 0.6
     else:
         size = 0.2
@@ -274,16 +285,30 @@ def score_entity(e: dict, role: str | None, label: str | None,
     if e.get("actions"):
         topo += 0.4
 
-    total = sem * 0.35 + role_s * 0.20 + spatial * 0.25 + size * 0.10 + topo * 0.10
+    # A query that names no reference entity has no spatial criterion at all:
+    # nothing was asked about position, so position is neither evidence nor a
+    # failure. Summing only the remaining 0.75 of weight while the hit gate
+    # (0.7) is calibrated on a 0...1 score capped a *perfect* match at 0.75 and
+    # left only 0.05 of headroom, so an exact label+role hit on a small
+    # control (a standard dialog button scores 0.2 on size) landed in
+    # `ambiguous` for lack of room rather than lack of evidence. Normalize by
+    # the applicable weight — ordering between candidates is untouched.
+    # Must stay identical to QueryEngine.score in Sources/GVGLQuery.
+    applicable = 0.75 if ref is None else 1.0
+    total = (sem * 0.35 + role_s * 0.20 + spatial * 0.25 + size * 0.10 + topo * 0.10) / applicable
     breakdown = dict(semantic=sem, role=role_s, spatial=spatial, size=size, topology=topo)
     return total, breakdown
 
 # ---------------------------------------------------------------------------
+class CellFilterUnavailable(RuntimeError):
+    """--cell was used against a frame that has no grid to filter on."""
+
+
 # Query (§6.1)
 
 def query(client: GVGLClient, role: str | None = None, label: str | None = None,
           region: str | None = None, cell: str | None = None,
-          app: str | None = None,
+          app: str | None = None, display: int | None = None,
           ref_id: str | None = None, ref_dir: str | None = None,
           top: int = 5) -> list[dict]:
     frame = client.get_frame(app=app)
@@ -299,9 +324,34 @@ def query(client: GVGLClient, role: str | None = None, label: str | None = None,
         region_set = set(region_ids)
         candidates = [e for e in candidates if e["id"] in region_set]
     elif cell:
-        # V2-1 grid pre-filter: index.byGrid[cell] (spatial hash).
-        grid_ids = set(frame["index"].get("byGrid", {}).get(cell, []))
+        # Grid pre-filter. This reads index.byGrid, which only exists when the
+        # daemon was started with a non-zero --index-grid. Under the default
+        # (linear) index byGrid is empty, so a cell query used to return
+        # `not_found` — silently, as if the cell genuinely held nothing. The
+        # cell a user asks about is well-defined regardless of how the frame
+        # happens to be indexed, so say what is actually wrong instead.
+        index = frame["index"]
+        grid_size = index.get("gridSize", 0) or 0
+        if not grid_size:
+            raise CellFilterUnavailable(
+                f"this daemon runs a linear index (index.gridSize=0), so there "
+                f"are no grid cells to filter on. Restart it with "
+                f"--index-grid N (e.g. --index-grid 4) to use --cell, or use "
+                f"--region q1..q4 / --display, which work in either mode."
+            )
+        by_grid = index.get("byGrid") or {}
+        if cell not in by_grid:
+            valid = ", ".join(sorted(by_grid)[:8]) or "(none)"
+            raise CellFilterUnavailable(
+                f"cell {cell!r} does not exist in a {grid_size}x{grid_size} "
+                f"grid (valid: {valid})"
+            )
+        grid_ids = set(by_grid[cell])
         candidates = [e for e in candidates if e["id"] in grid_ids]
+    if display is not None:
+        # V5: physical-display filter (CGDirectDisplayID, see `map` output) —
+        # pairs with --region to target one screen's quadrant.
+        candidates = [e for e in candidates if e.get("displayID") == display]
 
     scored = []
     for e in candidates:
@@ -345,12 +395,26 @@ def cmd_status(args):
     client = GVGLClient(args.socket)
     try:
         st = client.call("get_status")
-        print(json.dumps(st, indent=2, ensure_ascii=False))
-        return 0
     except (ConnectionError, OSError) as exc:
         print(f"cannot reach daemon at {args.socket}: {exc}", file=sys.stderr)
         print("start it with: .build/debug/gvgl", file=sys.stderr)
         return 1
+    except RuntimeError as exc:
+        # A daemon-side error is a user-facing condition, not a crash: report it
+        # on stderr instead of letting it surface as a Python traceback.
+        print(f"daemon error: {exc}", file=sys.stderr)
+        return 1
+
+    # stdout stays machine-readable JSON; guidance goes to stderr so piping into
+    # jq/another tool keeps working.
+    print(json.dumps(st, indent=2, ensure_ascii=False))
+    if not st.get("permissionGranted", True):
+        print("", file=sys.stderr)
+        print("辅助功能权限未授予 —— 桌面内容将全部报告 permission_denied。", file=sys.stderr)
+        print("  系统设置 › 隐私与安全性 › 辅助功能 中启用本程序（终端，", file=sys.stderr)
+        print("  或经 launchd 运行的 gvgl 二进制本身），然后重启守护进程。", file=sys.stderr)
+        return 3
+    return 0
 
 def cmd_frame(args):
     client = GVGLClient(args.socket)
@@ -388,9 +452,12 @@ def cmd_query(args):
     try:
         scored = query(
             client, role=args.role, label=args.label, region=args.region,
-            cell=args.cell, app=args.app, ref_id=args.reference,
-            ref_dir=args.relation, top=args.top,
+            cell=args.cell, app=args.app, display=args.display,
+            ref_id=args.reference, ref_dir=args.relation, top=args.top,
         )
+    except CellFilterUnavailable as exc:
+        print(f"query unavailable: {exc}", file=sys.stderr)
+        return 2
     except (ConnectionError, OSError, RuntimeError) as exc:
         print(f"query failed: {exc}", file=sys.stderr)
         return 1
@@ -513,6 +580,58 @@ def cmd_list(args):
                 print(f"      {role}: {count}")
     return 0
 
+def cmd_map(args):
+    """V5 coarse desktop map: displays + top-level windows in Display Space,
+    rendered as a per-display quadrant grid. The agent's first fetch — drill
+    down with `query --display N --region qK` or `frame --app pid:NNN`."""
+    client = GVGLClient(args.socket)
+    try:
+        m = client.call("get_map")
+    except (ConnectionError, OSError) as exc:
+        print(f"cannot reach daemon at {args.socket}: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(m, indent=2, ensure_ascii=False))
+        return 0
+
+    quadrants = {"q1": [], "q2": [], "q3": [], "q4": []}
+    for d in m.get("displays", []):
+        quadrants.setdefault(f"d{d['index']}", {"q1": [], "q2": [], "q3": [], "q4": []})
+
+    def label(w):
+        name = w.get("appName") or w.get("appKey")
+        title = w.get("title") or ""
+        star = "*" if w.get("frontmost") else " "
+        z = w.get("zIndex")
+        zt = f" z{z}" if z is not None else " z?"
+        return f"{star}{name}{zt}: {title}"[:60]
+
+    for w in m.get("windows", []):
+        quadrants.setdefault(f"d{w['display']}", {"q1": [], "q2": [], "q3": [], "q4": []})
+        quadrants[f"d{w['display']}"][w["region"]].append(label(w))
+
+    print(f"desktop map v{m.get('version')} status={m.get('status')} "
+          f"displays={len(m.get('displays', []))} "
+          f"windows={len(m.get('windows', []))} "
+          f"frontmost={m.get('frontmostApp')}")
+    for d in m.get("displays", []):
+        cells = quadrants.get(f"d{d['index']}", {"q1": [], "q2": [], "q3": [], "q4": []})
+        print(f"\ndisplay {d['index']} (id={d['id']}) {int(d['width'])}x{int(d['height'])}"
+              f" @({int(d['x'])},{int(d['y'])})"
+              f"{' [main]' if d['index'] == 0 else ''}")
+        for row, names in (("q1 左上 | q2 右上", ("q1", "q2")),
+                           ("q3 左下 | q4 右下", ("q3", "q4"))):
+            left = cells[names[0]] or ["(空)"]
+            right = cells[names[1]] or ["(空)"]
+            for i in range(max(len(left), len(right))):
+                l = left[i] if i < len(left) else ""
+                r = right[i] if i < len(right) else ""
+                print(f"  {l:<38} | {r}")
+            print("  " + "-" * 78)
+    print("\n* = 前台 App 窗口；z0 = 最前（CG 全局 Z 序）；矩形/象限均为所在屏归一化（Display Space）")
+    return 0
+
 def cmd_watch(args):
     client = GVGLClient(args.socket)
     last_version = None
@@ -533,17 +652,25 @@ def cmd_watch(args):
 
 def cmd_subscribe(args):
     """Push subscription: daemon pushes version-change events over the long
-    connection; with --pull, each event triggers an incremental frame fetch."""
+    connection; with --pull, each event triggers an incremental frame fetch.
+    With --regions, the daemon only pushes bumps touching those buckets."""
     client = GVGLClient(args.socket)
     seen = 0
     try:
-        for event in client.subscribe(since=args.since):
+        for event in client.subscribe(since=args.since, regions=args.regions):
             if event.get("event") == "ping":
                 continue
             if event.get("event") == "frame":
                 version = event.get("version")
                 apps = event.get("changed_apps", [])
-                line = f"event=frame version={version} changed_apps={apps}"
+                regions = event.get("changed_regions", [])
+                line = f"event=frame version={version} changed_apps={apps} changed_regions={regions}"
+                if event.get("requires_full_refresh"):
+                    # The cursor predates the retained change log (or came from
+                    # a previous daemon incarnation): `changed_apps` cannot
+                    # describe every skipped mutation, so treat the next frame
+                    # as a full snapshot instead of an incremental patch.
+                    line += " requires_full_refresh"
                 if args.pull:
                     try:
                         result = client.get_frame_since(since=version)
@@ -580,9 +707,11 @@ def main():
     p_query = sub.add_parser("query", help="scored spatial query")
     p_query.add_argument("--role", help="AX role, e.g. AXButton")
     p_query.add_argument("--label", help="title/description/identifier keyword")
-    p_query.add_argument("--region", help="q1/q2/q3/q4")
+    p_query.add_argument("--region", help="q1/q2/q3/q4 (of the element's own display, V5)")
     p_query.add_argument("--cell", help="grid cell pre-filter (e.g. r1c2, grid size from frame)")
     p_query.add_argument("--app", help="filter to one app (pid:NNN)")
+    p_query.add_argument("--display", type=int, default=None,
+                         help="CG display id filter (see `map`), e.g. 1 main / 2 secondary")
     p_query.add_argument("--reference", help="reference entity id")
     p_query.add_argument("--relation", help="above/below/left-of/right-of/near",
                          choices=["above", "below", "left-of", "right-of", "near"])
@@ -603,8 +732,15 @@ def main():
     p_watch.add_argument("--max", type=int, default=None)
     p_watch.set_defaults(func=cmd_watch)
 
+    p_map = sub.add_parser("map", help="coarse desktop map (displays + windows in quadrants, V5)")
+    p_map.add_argument("--json", action="store_true", help="machine-readable output")
+    p_map.set_defaults(func=cmd_map)
+
     p_sub = sub.add_parser("subscribe", help="push subscription (long connection)")
     p_sub.add_argument("--since", type=int, default=None, help="initial version (skip older changes)")
+    p_sub.add_argument("--regions", nargs="+", default=None,
+                       help="bucket mask, e.g. --regions d1q2 d2q4 sys (V5.1); "
+                            "only bumps touching these buckets are pushed")
     p_sub.add_argument("--pull", action="store_true", help="incremental frame pull per event")
     p_sub.add_argument("--max", type=int, default=None, help="stop after N events")
     p_sub.add_argument("--verbose", action="store_true")

@@ -17,7 +17,8 @@ final class QueryEngineTests: XCTestCase {
         actions: [String] = ["AXPress"],
         rect: NormRect = NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05),
         windowID: String? = "w",
-        appID: String = "pid:1"
+        appID: String = "pid:1",
+        displayID: Int? = nil
     ) -> Entity {
         Entity(
             id: id, role: role, title: title, detail: detail, identifier: identifier,
@@ -25,6 +26,7 @@ final class QueryEngineTests: XCTestCase {
             enabled: enabled, actions: actions,
             axParentID: nil, entityParentID: windowID, windowID: windowID,
             appID: appID, pid: 1,
+            appName: nil, displayID: displayID,
             geometry: Geometry(screen: rect, window: rect)
         )
     }
@@ -145,9 +147,42 @@ final class QueryEngineTests: XCTestCase {
         let e = entity("a", role: "AXButton", title: "登录", rect: NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05))
         let params = QueryParams(role: "AXButton", label: "登录")
         let (total, b) = score(e, params)
-        // Exact title match → semantic 1.0.
-        XCTAssertEqual(total, 1.0 * 0.35 + 1.0 * 0.20 + 1.0 * 0.10 + 1.0 * 0.10, accuracy: 1e-9)
+        // Exact title match → semantic 1.0. No reference entity was named, so
+        // the spatial criterion does not apply and the applicable weights are
+        // normalized — a perfect match is a perfect 1.0, not a 0.75 ceiling.
+        XCTAssertEqual(total, 1.0, accuracy: 1e-9)
         XCTAssertEqual(b["semantic"], 1.0)
+    }
+
+    /// The score must span the full 0...1 range for a query that names no
+    /// reference entity, so an exact label+role hit is not dragged under the
+    /// 0.7 hit gate purely for lack of headroom. (Regression: a standard
+    /// dialog button scores 0.2 on size, which used to be enough to turn an
+    /// exact match into `ambiguous`.)
+    func testExactMatchWithoutSpatialClauseReachesHit() {
+        // ~82x26 px on a 3440x1440 display: a normal dialog button.
+        let dialogButton = entity("a", role: "AXButton", title: "登录",
+                                  rect: NormRect(x: 0.5317, y: 0.2938, w: 0.0238, h: 0.0181))
+        let result = QueryEngine.query(
+            frame: frame([dialogButton]),
+            params: QueryParams(role: "AXButton", label: "登录")
+        )
+        XCTAssertEqual(result.status, .hit,
+                       "exact label+role match on a normal dialog button should be actionable, "
+                       + "got \(result.status) with score \(result.best?.score ?? -1)")
+    }
+
+    /// Normalizing must not flatten the ranking: among no-spatial candidates a
+    /// weak match still has to lose to an exact one.
+    func testNormalizationKeepsRelativeOrdering() {
+        let exact = entity("a", role: "AXButton", title: "登录", rect: NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05))
+        let weak = entity("b", role: "AXButton", title: "其他", rect: NormRect(x: 0.5, y: 0.5, w: 0.05, h: 0.05))
+        let result = QueryEngine.query(
+            frame: frame([weak, exact]),
+            params: QueryParams(role: "AXButton", label: "登录")
+        )
+        XCTAssertEqual(result.best?.id, "a")
+        XCTAssertEqual(result.status, .hit)
     }
 
     func testStatusGates() {
@@ -167,11 +202,56 @@ final class QueryEngineTests: XCTestCase {
         XCTAssertEqual(QueryEngine.query(frame: frame([weak]), params: QueryParams(role: "AXImage", label: "无")).status, .axWeak)
     }
 
+    /// The size term must actually discriminate. Its previous bands put 84%
+    /// of real pressable elements in the worst bucket — disproportionately the
+    /// small, precise ones (dialog buttons, list rows) that an agent most wants
+    /// to click — so it behaved as a near-constant penalty carrying no
+    /// information. Pin the behaviour, not just the numbers.
+    func testSizeTermDiscriminatesRealisticTargets() {
+        let screen = ScreenInfo(width: 3440, height: 1440)
+        // A standard dialog button: 82x26 px → normalized area ~0.00043.
+        let dialogButton = entity("a", role: "AXButton", title: "登录",
+                                  rect: NormRect(x: 0.53, y: 0.29, w: 0.0238, h: 0.0181))
+        // A menu-bar item: long and thin, comfortably wide.
+        let menuItem = entity("b", role: "AXMenuBarItem", title: "文件",
+                              rect: NormRect(x: 0.01, y: 0.0, w: 0.05, h: 0.02))
+        // A speck: 4x4 px, genuinely too small to hit.
+        let speck = entity("c", role: "AXButton", title: "登录",
+                           rect: NormRect(x: 0.5, y: 0.5, w: 0.0003, h: 0.0003))
+
+        let params = QueryParams(role: "AXButton", label: "登录")
+        let (_, bButton) = score(dialogButton, params)
+        let (_, bMenu) = score(menuItem, QueryParams(role: "AXMenuBarItem", label: "文件"))
+        let (_, bSpeck) = score(speck, params)
+
+        XCTAssertEqual(bButton["size"], 1.0, "a normal dialog button must not be penalised as tiny")
+        XCTAssertEqual(bMenu["size"], 1.0)
+        XCTAssertLessThan(bSpeck["size"]!, bButton["size"]!,
+                          "a 4x4 px target must still score below a real control")
+    }
+
     func testPixelCenter() {
         let e = entity("a", rect: NormRect(x: 0.49, y: 0.64, w: 0.02, h: 0.02))
         let p = QueryEngine.pixelCenter(of: e, screen: screen)
         XCTAssertEqual(p.x, 0.5 * 3440, accuracy: 0.01)
         XCTAssertEqual(p.y, 0.65 * 1440, accuracy: 0.01)
+    }
+
+    /// V5: display filter narrows candidates to one physical display —
+    /// "display 2 的 q2" becomes a two-keyword query.
+    func testDisplayFilter() {
+        let a = entity("a", title: "按钮", displayID: 1)
+        let b = entity("b", title: "按钮", displayID: 2)
+        let f = frame([a, b])
+
+        let onTwo = QueryEngine.query(frame: f, params: QueryParams(label: "按钮", display: 2, top: 5))
+        XCTAssertEqual(onTwo.ranked.map(\.id), ["b"])
+
+        let onOne = QueryEngine.query(frame: f, params: QueryParams(label: "按钮", display: 1, top: 5))
+        XCTAssertEqual(onOne.ranked.map(\.id), ["a"])
+
+        let unknown = QueryEngine.query(frame: f, params: QueryParams(label: "按钮", display: 7, top: 5))
+        XCTAssertEqual(unknown.status, .notFound)
     }
 }
 

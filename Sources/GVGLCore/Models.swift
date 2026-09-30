@@ -93,7 +93,8 @@ public struct NormRect: Codable, Hashable, Sendable {
 
 // MARK: - Spatial labels
 
-/// Four quadrants, computed from the entity center in Screen Space.
+/// Four quadrants, computed from the entity center in Display Space (V5:
+/// per-display quadrants — the space a human sees the element in).
 public enum Region: String, Codable, Hashable, Sendable, CaseIterable {
     case q1, q2, q3, q4
 
@@ -105,7 +106,7 @@ public enum Region: String, Codable, Hashable, Sendable, CaseIterable {
     }
 }
 
-/// Nine-grid cell, computed from the entity center in Screen Space.
+/// Nine-grid cell, computed from the entity center in Display Space (V5).
 public enum Region9: String, Codable, Hashable, Sendable, CaseIterable {
     case leftTop, centerTop, rightTop
     case leftCenter, centerCenter, rightCenter
@@ -138,6 +139,13 @@ public struct Geometry: Codable, Hashable, Sendable {
     /// parent's normalized coordinate system; unit rect when the entity has
     /// no entity parent (window roots, menu-bar roots, orphans).
     public var local: NormRect
+    /// V5 Display Space: rect relative to the physical display containing the
+    /// element (per-display normalization). Equals `screen` when the screen
+    /// carries no display info (single-display recordings, synthetic tests).
+    /// Spatial labels (`region`/`region9`) derive from THIS space so quadrants
+    /// are correct on every display — main-screen normalization made every
+    /// secondary-display element "q1/q3" garbage.
+    public var display: NormRect
     public var centerX: Double
     public var centerY: Double
     public var area: Double
@@ -145,16 +153,55 @@ public struct Geometry: Codable, Hashable, Sendable {
     public var region: Region
     public var region9: Region9
 
-    public init(screen: NormRect, window: NormRect, local: NormRect = .unit) {
+    public init(screen: NormRect, window: NormRect, local: NormRect = .unit, display: NormRect? = nil) {
         self.screen = screen
         self.window = window
         self.local = local
+        self.display = display ?? screen
         self.centerX = screen.centerX
         self.centerY = screen.centerY
         self.area = screen.area
         self.aspect = screen.aspect
-        self.region = Region.of(centerX: screen.centerX, centerY: screen.centerY)
-        self.region9 = Region9.of(centerX: screen.centerX, centerY: screen.centerY)
+        // Quadrants describe where a human sees the element — that is inside
+        // its own display, not in main-screen-normalized global space.
+        self.region = Region.of(centerX: self.display.centerX, centerY: self.display.centerY)
+        self.region9 = Region9.of(centerX: self.display.centerX, centerY: self.display.centerY)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case screen, window, local, display
+        case centerX, centerY, area, aspect, region, region9
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        screen = try c.decode(NormRect.self, forKey: .screen)
+        window = try c.decode(NormRect.self, forKey: .window)
+        local = try c.decodeIfPresent(NormRect.self, forKey: .local) ?? .unit
+        // Pre-V5 frames carry no display space → screen space (their region
+        // labels were computed that way, so semantics round-trip).
+        let decodedDisplay = try c.decodeIfPresent(NormRect.self, forKey: .display) ?? screen
+        display = decodedDisplay
+        centerX = try c.decode(Double.self, forKey: .centerX)
+        centerY = try c.decode(Double.self, forKey: .centerY)
+        area = try c.decode(Double.self, forKey: .area)
+        aspect = try c.decode(Double.self, forKey: .aspect)
+        region = try c.decode(Region.self, forKey: .region)
+        region9 = try c.decode(Region9.self, forKey: .region9)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(screen, forKey: .screen)
+        try c.encode(window, forKey: .window)
+        try c.encode(local, forKey: .local)
+        try c.encode(display, forKey: .display)
+        try c.encode(centerX, forKey: .centerX)
+        try c.encode(centerY, forKey: .centerY)
+        try c.encode(area, forKey: .area)
+        try c.encode(aspect, forKey: .aspect)
+        try c.encode(region, forKey: .region)
+        try c.encode(region9, forKey: .region9)
     }
 }
 
@@ -403,7 +450,13 @@ public struct SpatialIndex: Codable, Hashable, Sendable {
         return "r\(row)c\(col)"
     }
 
-    public static func build(from entities: [Entity], gridSize: Int = 4) -> SpatialIndex {
+    /// Default is the product default (`0` = linear scan), NOT a grid size.
+    /// An omitted argument must never silently change a frame's index shape:
+    /// the daemon runs linear by default, so a `4` default would make every
+    /// call site that forgets to pass the engine's gridSize quietly disagree
+    /// with the configured value (that exact mismatch shipped twice before —
+    /// V4.1 #5 `mergeWindow` and `IDStabilizer.remapped`).
+    public static func build(from entities: [Entity], gridSize: Int = 0) -> SpatialIndex {
         var idx = SpatialIndex(gridSize: gridSize)
         for e in entities {
             idx.byRegion[String(e.geometry.region.rawValue), default: []].append(e.id)
@@ -437,7 +490,9 @@ public protocol SpatialIndexBuilding: Sendable {
 public struct GridIndexBuilder: SpatialIndexBuilding {
     public var gridSize: Int
 
-    public init(gridSize: Int = 4) {
+    /// Defaults to the product default (linear scan) for the same reason as
+    /// `SpatialIndex.build` — see the note there.
+    public init(gridSize: Int = 0) {
         self.gridSize = gridSize
     }
 
@@ -475,6 +530,11 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
     public var entityCount: Int
     /// V2-3 CGWindow cross-check: on-screen CG window count seen by the probe.
     public var cgWindowCount: Int?
+    /// AX action probes that ERRORED during the last capture. Present only
+    /// when non-zero: it means `actions` in this app's subtree is incomplete
+    /// for an unknown reason, rather than the elements genuinely having no
+    /// actions. Zero-omitted keeps normal frames byte-identical.
+    public var actionProbeFailures: Int?
     /// V2-3: AX window entity count (may exceed CG count: AX sees all Spaces).
     public var axWindowCount: Int?
     /// V2-3: CG window titles with no matching AX window (weak-AX signal).
@@ -489,6 +549,7 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         capturedAt: Date?,
         entityCount: Int,
         cgWindowCount: Int? = nil,
+        actionProbeFailures: Int? = nil,
         axWindowCount: Int? = nil,
         missingWindowTitles: [String]? = nil
     ) {
@@ -500,13 +561,14 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         self.capturedAt = capturedAt
         self.entityCount = entityCount
         self.cgWindowCount = cgWindowCount
+        self.actionProbeFailures = actionProbeFailures
         self.axWindowCount = axWindowCount
         self.missingWindowTitles = missingWindowTitles
     }
 
     enum CodingKeys: String, CodingKey {
         case appKey, pid, bundleID, name, status, capturedAt, entityCount
-        case cgWindowCount, axWindowCount, missingWindowTitles
+        case cgWindowCount, axWindowCount, missingWindowTitles, actionProbeFailures
     }
 
     public init(from decoder: Decoder) throws {
@@ -519,6 +581,7 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         capturedAt = try c.decodeIfPresent(Date.self, forKey: .capturedAt)
         entityCount = try c.decode(Int.self, forKey: .entityCount)
         cgWindowCount = try c.decodeIfPresent(Int.self, forKey: .cgWindowCount)
+        actionProbeFailures = try c.decodeIfPresent(Int.self, forKey: .actionProbeFailures)
         axWindowCount = try c.decodeIfPresent(Int.self, forKey: .axWindowCount)
         missingWindowTitles = try c.decodeIfPresent([String].self, forKey: .missingWindowTitles)
     }
@@ -533,6 +596,7 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         try c.encodeIfPresent(capturedAt, forKey: .capturedAt)
         try c.encode(entityCount, forKey: .entityCount)
         try c.encodeIfPresent(cgWindowCount, forKey: .cgWindowCount)
+        try c.encodeIfPresent(actionProbeFailures, forKey: .actionProbeFailures)
         try c.encodeIfPresent(axWindowCount, forKey: .axWindowCount)
         try c.encodeIfPresent(missingWindowTitles, forKey: .missingWindowTitles)
     }
@@ -562,6 +626,11 @@ public struct SceneApp: Codable, Hashable, Sendable {
     public var entityCount: Int
     /// --cg-check diagnostics (nil when the probe's diagnostics are off).
     public var cgWindowCount: Int?
+    /// AX action probes that ERRORED during the last capture. Present only
+    /// when non-zero: it means `actions` in this app's subtree is incomplete
+    /// for an unknown reason, rather than the elements genuinely having no
+    /// actions. Zero is omitted so normal frames are unchanged.
+    public var actionProbeFailures: Int?
     public var axWindowCount: Int?
     public var missingWindowTitles: [String]?
     public var children: [Entity]
@@ -575,6 +644,7 @@ public struct SceneApp: Codable, Hashable, Sendable {
         capturedAt: Date?,
         entityCount: Int,
         cgWindowCount: Int? = nil,
+        actionProbeFailures: Int? = nil,
         axWindowCount: Int? = nil,
         missingWindowTitles: [String]? = nil,
         children: [Entity]
@@ -587,6 +657,7 @@ public struct SceneApp: Codable, Hashable, Sendable {
         self.capturedAt = capturedAt
         self.entityCount = entityCount
         self.cgWindowCount = cgWindowCount
+        self.actionProbeFailures = actionProbeFailures
         self.axWindowCount = axWindowCount
         self.missingWindowTitles = missingWindowTitles
         self.children = children
@@ -635,6 +706,141 @@ public extension GVGLFrame {
     /// All entities flattened from the scene tree in document order.
     var allEntities: [Entity] {
         scene.flatMap { SceneTree.flatten($0.children) }
+    }
+}
+
+// MARK: - Desktop map (V5)
+
+/// One display in the coarse agent map: global pixel rect plus a friendly
+/// index (0 = main display). `id` is the CGDirectDisplayID that entity
+/// `displayID` refers to.
+public struct MapDisplay: Codable, Hashable, Sendable {
+    public var id: Int
+    public var index: Int
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+    public var scaleFactor: Double
+
+    public init(id: Int, index: Int, x: Double, y: Double, width: Double, height: Double, scaleFactor: Double) {
+        self.id = id
+        self.index = index
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.scaleFactor = scaleFactor
+    }
+}
+
+/// One top-level window in the coarse agent map, positioned in Display Space
+/// with its quadrant labels — the agent's "minimap" entry before drilling
+/// into `get_frame` for details.
+public struct MapWindow: Codable, Hashable, Sendable {
+    public var id: String
+    public var appKey: String
+    public var appName: String?
+    public var title: String?
+    /// Display index into DesktopMap.displays.
+    public var display: Int
+    /// Display Space rect (per-display normalized).
+    public var rect: NormRect
+    public var region: Region
+    public var region9: Region9
+    public var zIndex: Int?
+    /// Window belongs to the frontmost application.
+    public var frontmost: Bool
+
+    public init(id: String, appKey: String, appName: String?, title: String?,
+                display: Int, rect: NormRect, region: Region, region9: Region9,
+                zIndex: Int?, frontmost: Bool) {
+        self.id = id
+        self.appKey = appKey
+        self.appName = appName
+        self.title = title
+        self.display = display
+        self.rect = rect
+        self.region = region
+        self.region9 = region9
+        self.zIndex = zIndex
+        self.frontmost = frontmost
+    }
+}
+
+/// Coarse spatial map of the whole desktop (V5): displays + every top-level
+/// window in Display Space with quadrant labels, front-to-back. KB-scale —
+/// the agent's first fetch, before `get_frame?app=` / `?depth=` drill-downs.
+public struct DesktopMap: Codable, Hashable, Sendable {
+    public var version: UInt64
+    public var displays: [MapDisplay]
+    /// zIndex order (frontmost first); unmatched/off-screen windows last,
+    /// id-sorted for determinism.
+    public var windows: [MapWindow]
+    public var frontmostApp: String?
+    public var status: FrameStatus
+
+    public init(version: UInt64, displays: [MapDisplay], windows: [MapWindow],
+                frontmostApp: String?, status: FrameStatus) {
+        self.version = version
+        self.displays = displays
+        self.windows = windows
+        self.frontmostApp = frontmostApp
+        self.status = status
+    }
+}
+
+public extension GVGLFrame {
+    /// Builds the coarse desktop map from a materialized frame. Pure — no AX
+    /// calls; safe to derive from any cached frame.
+    var desktopMap: DesktopMap {
+        let mapDisplays: [MapDisplay]
+        if screen.displays.isEmpty {
+            mapDisplays = [MapDisplay(
+                id: 0, index: 0, x: 0, y: 0,
+                width: screen.width, height: screen.height,
+                scaleFactor: screen.scaleFactor
+            )]
+        } else {
+            mapDisplays = screen.displays.enumerated().map { index, d in
+                MapDisplay(id: d.id, index: index, x: d.x, y: d.y,
+                           width: d.width, height: d.height, scaleFactor: d.scaleFactor)
+            }
+        }
+        let indexOfDisplayID = Dictionary(
+            mapDisplays.map { ($0.id, $0.index) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        let windows = allEntities
+            .filter { $0.role == "AXWindow" }
+            .map { e in
+                MapWindow(
+                    id: e.id,
+                    appKey: e.appID,
+                    appName: e.appName,
+                    title: e.title,
+                    display: e.displayID.flatMap { indexOfDisplayID[$0] } ?? 0,
+                    rect: e.geometry.display,
+                    region: e.geometry.region,
+                    region9: e.geometry.region9,
+                    zIndex: e.zIndex,
+                    frontmost: e.appID == frontmostApp
+                )
+            }
+            .sorted {
+                let za = $0.zIndex ?? Int.max
+                let zb = $1.zIndex ?? Int.max
+                return za == zb ? $0.id < $1.id : za < zb
+            }
+
+        return DesktopMap(
+            version: version,
+            displays: mapDisplays,
+            windows: windows,
+            frontmostApp: frontmostApp,
+            status: status
+        )
     }
 }
 

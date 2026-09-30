@@ -12,3 +12,12 @@ dist/
 # 运行时残留
 *.sock
 *.log
+
+# DeepOrca 生成物（集中管理于 .deeporca/，2026-08-31）
+.deeporca/settings.json
+.deeporca/codegraph/
+.deeporca/crg/
+.deeporca/deepwiki/
+.deeporca/reviews/
+.codegraph
+deepwiki

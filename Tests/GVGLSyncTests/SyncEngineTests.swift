@@ -3,15 +3,65 @@ import XCTest
 @testable import GVGLCore
 
 final class SyncEngineTests: XCTestCase {
+    /// The engine captures on `syncQueue` while the test thread configures the
+    /// mock and polls the counters, so every field needs a guard. Without one
+    /// the suite reports data races under Thread Sanitizer and the counters
+    /// can tear. Closures are copied out under the lock and invoked outside it,
+    /// so a test closure is free to touch the mock again.
     private final class MockCapturer: AppCapturing, @unchecked Sendable {
-        var snapshotCount = 0
-        var windowSnapshotCount = 0
-        var error: AXSnapshotError?
-        var makeNodes: (Int32) -> [AXNode] = { _ in [] }
-        var makeWindowNodes: (Int32, [Int]) -> AXAppSnapshot? = { _, _ in nil }
+        private let lock = NSLock()
+        private var storedSnapshotCount = 0
+        private var storedWindowSnapshotCount = 0
+        private var storedError: AXSnapshotError?
+        private var storedMakeNodes: (Int32) -> [AXNode] = { _ in [] }
+        private var storedMakeWindowNodes: (Int32, [Int]) -> AXAppSnapshot? = { _, _ in nil }
+
+        var snapshotCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return storedSnapshotCount
+        }
+
+        var windowSnapshotCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return storedWindowSnapshotCount
+        }
+
+        var error: AXSnapshotError? {
+            get {
+                lock.lock(); defer { lock.unlock() }
+                return storedError
+            }
+            set {
+                lock.lock(); storedError = newValue; lock.unlock()
+            }
+        }
+
+        var makeNodes: (Int32) -> [AXNode] {
+            get {
+                lock.lock(); defer { lock.unlock() }
+                return storedMakeNodes
+            }
+            set {
+                lock.lock(); storedMakeNodes = newValue; lock.unlock()
+            }
+        }
+
+        var makeWindowNodes: (Int32, [Int]) -> AXAppSnapshot? {
+            get {
+                lock.lock(); defer { lock.unlock() }
+                return storedMakeWindowNodes
+            }
+            set {
+                lock.lock(); storedMakeWindowNodes = newValue; lock.unlock()
+            }
+        }
 
         func snapshot(pid: Int32, appKey: String) -> AXAppSnapshot {
-            snapshotCount += 1
+            lock.lock()
+            storedSnapshotCount += 1
+            let error = storedError
+            let makeNodes = storedMakeNodes
+            lock.unlock()
             if let error {
                 return AXAppSnapshot(appKey: appKey, pid: pid, nodes: [], visited: 0, truncated: false, error: error, elapsed: 0)
             }
@@ -19,7 +69,10 @@ final class SyncEngineTests: XCTestCase {
         }
 
         func snapshotWindow(pid: Int32, appKey: String, path: [Int]) -> AXAppSnapshot? {
-            windowSnapshotCount += 1
+            lock.lock()
+            storedWindowSnapshotCount += 1
+            let makeWindowNodes = storedMakeWindowNodes
+            lock.unlock()
             return makeWindowNodes(pid, path)
         }
     }
@@ -233,6 +286,86 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(engine.screen, newScreen)
     }
 
+    /// The screen accessor is a lock-protected snapshot, so concurrent
+    /// readers must always observe one of the published values — never a torn
+    /// mix of two, and never a hang. (Run under Thread Sanitizer this also
+    /// proves the read/write pair is actually guarded; the assertion alone
+    /// only proves the values are self-consistent.)
+    func testScreenAccessorIsSafeUnderConcurrentReadWrite() {
+        let model = DesktopModel()
+        let capturer = MockCapturer()
+        let engine = SyncEngine(model: model, capturer: capturer, screen: screen, debounceInterval: 0.02)
+
+        // Two distinct, individually self-consistent screens. A torn read
+        // would mix e.g. A's width with B's height.
+        let screenA = ScreenInfo(width: 1000, height: 800, scaleFactor: 2)
+        let screenB = ScreenInfo(width: 3440, height: 1440, scaleFactor: 1)
+        let published: Set<ScreenInfo> = [screenA, screenB]
+
+        engine.screenReader = { screenB }
+        let iterations = 2000
+        let flagLock = NSLock()
+        var readsOK = true
+
+        DispatchQueue.concurrentPerform(iterations: iterations) { i in
+            if i % 2 == 0 {
+                engine.refreshScreen()
+            } else {
+                let observed = engine.screen
+                if !published.contains(observed) {
+                    flagLock.lock()
+                    readsOK = false
+                    flagLock.unlock()
+                }
+            }
+        }
+
+        XCTAssertTrue(readsOK, "observed a value that was never published (torn read)")
+        // The last writer wins, but the value must be one of the published set.
+        XCTAssertTrue(published.contains(engine.screen))
+    }
+
+    // MARK: - Window-owner discovery (non-application processes)
+
+    /// A process that owns a real on-screen window but is not an application
+    /// as far as NSWorkspace is concerned — an `osascript` modal being the case
+    /// that motivated this. It must be captured like any other app, and dropped
+    /// again once its window closes instead of lingering in the model.
+    func testDiscoversNonApplicationWindowOwnerAndReleasesIt() {
+        final class MockWindowProbe: CGWindowProviding, @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored: [Int32] = []
+            var owners: [Int32] {
+                get { lock.lock(); defer { lock.unlock() }; return stored }
+                set { lock.lock(); stored = newValue; lock.unlock() }
+            }
+            func onScreenWindows(pid: Int32) -> [CGWindowInfo] { [] }
+            func discoverWindowOwnerPIDs() -> [Int32] { owners }
+        }
+
+        let model = DesktopModel()
+        let capturer = MockCapturer()
+        let probe = MockWindowProbe()
+        let engine = SyncEngine(model: model, capturer: capturer, screen: screen,
+                                debounceInterval: 0.02, reconciliationInterval: 0.2,
+                                windowProbe: probe)
+        capturer.makeNodes = windowNode
+        engine.start()
+        defer { engine.stop() }
+
+        probe.owners = [4242]
+        XCTAssertTrue(waitUntil { model.appKeys.contains("pid:4242") },
+                      "a window-owning process the daemon does not know as an app was never discovered")
+        XCTAssertTrue(
+            waitUntil { model.frame(screen: self.screen).allEntities.contains { $0.appID == "pid:4242" } },
+            "discovered process produced no entities")
+
+        // The dialog closes.
+        probe.owners = []
+        XCTAssertTrue(waitUntil { !model.appKeys.contains("pid:4242") },
+                      "a vanished process lingered in the model")
+    }
+
     // MARK: - Reconciler batch selection (V3 speedup)
 
     private func appInfos(_ count: Int) -> [AppInfo] {
@@ -402,5 +535,70 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(capturer.windowSnapshotCount, 0)
         XCTAssertEqual(capturer.snapshotCount, 1)
         XCTAssertEqual(model.version, versionBefore)
+    }
+
+    /// Window with a nested AXWindow (sheet / Electron inner window): the
+    /// subtree recapture re-produces the sheet's entities too. The keep-filter
+    /// used to compare only the top-level windowID, so the sheet's previous
+    /// entities survived AND the fresh copy was added — the same path id twice
+    /// (live-audit duplicates on Electron apps).
+    private func windowWithSheetNodes(pid: Int32, buttonTitle: String) -> [AXNode] {
+        let key = "pid:\(pid)"
+        let sheetButton = AXNode(
+            id: "\(key):0-1-0", role: "AXButton", title: buttonTitle,
+            frame: CGRect(x: 20, y: 20, width: 60, height: 24),
+            parentID: "\(key):0-1", windowID: "\(key):0-1"
+        )
+        let sheet = AXNode(
+            id: "\(key):0-1", role: "AXWindow", title: "Sheet",
+            frame: CGRect(x: 10, y: 10, width: 200, height: 150),
+            parentID: "\(key):0", windowID: "\(key):0-1",
+            children: [sheetButton]
+        )
+        let win = AXNode(
+            id: "\(key):0", role: "AXWindow", title: "Main",
+            frame: CGRect(x: 0, y: 0, width: 500, height: 400),
+            parentID: "\(key):root", windowID: "\(key):0",
+            children: [sheet]
+        )
+        return [AXNode(id: "\(key):root", role: nil, frame: nil,
+                       parentID: nil, windowID: nil, children: [win])]
+    }
+
+    func testWindowRecaptureWithNestedSheetDoesNotDuplicate() {
+        let model = DesktopModel()
+        let capturer = MockCapturer()
+        capturer.makeNodes = { [self] pid in windowWithSheetNodes(pid: pid, buttonTitle: "旧") }
+        capturer.makeWindowNodes = { [self] pid, path in
+            XCTAssertEqual(path, [0])
+            let key = "pid:\(pid)"
+            return AXAppSnapshot(
+                appKey: key, pid: pid,
+                nodes: windowWithSheetNodes(pid: pid, buttonTitle: "新").compactMap { node in
+                    // Subtree capture roots at the window itself (no app root).
+                    node.children.first
+                },
+                visited: 0, truncated: false, error: nil, elapsed: 0
+            )
+        }
+        let engine = SyncEngine(model: model, capturer: capturer, screen: screen, debounceInterval: 0.02)
+        engine.monitor(info: AppInfo(appKey: "pid:42", pid: 42, bundleID: nil, name: "X"))
+        XCTAssertTrue(waitUntil { model.meta(appKey: "pid:42")?.status == .synced })
+        Thread.sleep(forTimeInterval: 0.25) // throttle window
+
+        let before = model.frame(screen: screen)
+        XCTAssertEqual(before.allEntities.count, 3, "window + sheet + sheet button")
+        engine.markWindowDirty(pid: 42, rect: CGRect(x: 0, y: 0, width: 500, height: 400))
+        XCTAssertTrue(waitUntil { capturer.windowSnapshotCount >= 1 })
+        XCTAssertTrue(waitUntil { model.version > before.version })
+
+        let after = model.frame(screen: screen)
+        let all = after.allEntities
+        XCTAssertEqual(all.count, 3, "sheet entities must be replaced, not duplicated")
+        for id in ["pid:42:0", "pid:42:0-1", "pid:42:0-1-0"] {
+            XCTAssertEqual(all.filter { $0.id == id }.count, 1, "\(id) must appear exactly once")
+        }
+        XCTAssertEqual(all.first { $0.id == "pid:42:0-1-0" }?.title, "新",
+                       "fresh subtree content wins over the stale copy")
     }
 }

@@ -44,7 +44,12 @@ extension Snapshotter: AppCapturing {}
 /// with periodic full re-capture (Reconciler) as the eventual-consistency backstop.
 public final class SyncEngine: @unchecked Sendable {
     public let model: DesktopModel
-    public private(set) var screen: ScreenInfo
+    private var screenStorage: ScreenInfo
+    public var screen: ScreenInfo {
+        lock.lock()
+        defer { lock.unlock() }
+        return screenStorage
+    }
     public var debounceInterval: TimeInterval
     public var reconciliationInterval: TimeInterval
     /// Min gap between two captures of the same app (dirty-storm throttle).
@@ -72,6 +77,11 @@ public final class SyncEngine: @unchecked Sendable {
 
     private let lock = NSLock()
     private var infos: [String: AppInfo] = [:]
+    /// Processes found by CGWindow discovery rather than NSWorkspace, and the
+    /// window count that justified keeping them. Re-evaluated every reconcile
+    /// tick so a dialog that closes is dropped again instead of lingering.
+    private var discoveredPIDs: [Int32: Int] = [:]
+    private let windowProbe: CGWindowProviding
     private var lastCaptured: [String: Date] = [:]
     private var cooldownUntil: [String: Date] = [:]
     private var dirty = Set<String>()
@@ -92,13 +102,15 @@ public final class SyncEngine: @unchecked Sendable {
         capturer: AppCapturing,
         screen: ScreenInfo,
         debounceInterval: TimeInterval = 0.05,
-        reconciliationInterval: TimeInterval = 3.0
+        reconciliationInterval: TimeInterval = 3.0,
+        windowProbe: CGWindowProviding = CGWindowProbe()
     ) {
         self.model = model
         self.capturer = capturer
-        self.screen = screen
+        self.screenStorage = screen
         self.debounceInterval = debounceInterval
         self.reconciliationInterval = reconciliationInterval
+        self.windowProbe = windowProbe
     }
 
     // MARK: - Lifecycle
@@ -237,7 +249,7 @@ public final class SyncEngine: @unchecked Sendable {
             return
         }
         if let rect {
-            let norm = CoordinateComputer(screen: screen).screenNorm(rect)
+            let norm = CoordinateComputer(screen: screenStorage).screenNorm(rect)
             var rects = pendingWindowRects[key] ?? []
             if !rects.contains(where: { ($0.centerX - norm.centerX).magnitude < 0.01
                 && ($0.centerY - norm.centerY).magnitude < 0.01 }) {
@@ -295,9 +307,11 @@ public final class SyncEngine: @unchecked Sendable {
     /// Re-reads the screen geometry via `screenReader` (called each reconcile
     /// tick so display changes don't stale normalization).
     public func refreshScreen() {
-        if let reader = screenReader {
-            screen = reader()
-        }
+        guard let reader = screenReader else { return }
+        let refreshed = reader()
+        lock.lock()
+        screenStorage = refreshed
+        lock.unlock()
     }
 
     /// Display reconfiguration hook (M3): the normalization base changed, so
@@ -315,6 +329,7 @@ public final class SyncEngine: @unchecked Sendable {
 
     private func reconcile() {
         refreshScreen()
+        discoverWindowOwners()
         let now = Date()
         lock.lock()
         let due = infos.values.filter { info in
@@ -336,6 +351,57 @@ public final class SyncEngine: @unchecked Sendable {
         for info in batch {
             syncApp(info: info)
         }
+    }
+
+    /// Picks up processes that own a real on-screen window but are not
+    /// applications as far as NSWorkspace is concerned — `osascript` dialogs
+    /// above all. Without this the daemon is blind to modal dialogs, and an
+    /// agent asking for a button inside one gets confidently wrong answers.
+    ///
+    /// Runs every reconcile tick: CGWindowList is a cheap local call with no
+    /// target-app IPC (the same reason it is used for z-order ranking).
+    private func discoverWindowOwners() {
+        let live = Set(windowProbe.discoverWindowOwnerPIDs()).subtracting([getpid()])
+        let known = knownPIDs()
+
+        for pid in live.subtracting(known) {
+            monitorDiscovered(pid: pid)
+        }
+        // Drop discoveries whose windows are gone, so short-lived dialog
+        // processes do not accumulate in the model forever. A process that
+        // gained a real NSWorkspace identity in the meantime is left alone —
+        // WorkspaceTracker owns its lifetime.
+        for pid in discoveredPIDs.keys where !live.contains(pid) {
+            unmonitorDiscovered(pid: pid)
+        }
+    }
+
+    private func knownPIDs() -> Set<Int32> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(infos.values.map(\.pid))
+    }
+
+    private func monitorDiscovered(pid: Int32) {
+        let appKey = "pid:\(pid)"
+        lock.lock()
+        guard infos[appKey] == nil else { lock.unlock(); return }
+        discoveredPIDs[pid] = 0
+        lock.unlock()
+
+        // No bundle id: CGWindowList knows the process owns a window but not
+        // what it is called. NSRunningApplication still resolves a localized
+        // name for many of these; fall back to the pid so the frame and agent
+        // output stay identifiable either way.
+        let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "pid:\(pid)"
+        monitor(info: AppInfo(appKey: appKey, pid: pid, bundleID: nil, name: name))
+    }
+
+    private func unmonitorDiscovered(pid: Int32) {
+        lock.lock()
+        discoveredPIDs.removeValue(forKey: pid)
+        lock.unlock()
+        unmonitor(pid: pid)
     }
 
     /// Staleness-ordered batch selection: least-recently-captured apps first
@@ -413,6 +479,7 @@ public final class SyncEngine: @unchecked Sendable {
             bundleID: info.bundleID, name: info.name,
             status: .warming, capturedAt: now, entityCount: 0,
             cgWindowCount: remapped.cgWindowCount > 0 ? remapped.cgWindowCount : nil,
+            actionProbeFailures: remapped.actionProbeFailures > 0 ? remapped.actionProbeFailures : nil,
             axWindowCount: remapped.axWindowCount > 0 ? remapped.axWindowCount : nil,
             missingWindowTitles: remapped.missingWindowTitles.isEmpty ? nil : remapped.missingWindowTitles
         )
@@ -455,7 +522,7 @@ public final class SyncEngine: @unchecked Sendable {
             let candidates = oldWindows.filter { !handled.contains($0.id) }
             guard let match = candidates.min(by: { distanceFrom($0, to: rect) < distanceFrom($1, to: rect) }),
                   distanceFrom(match, to: rect) < 0.05 else { continue }
-            guard let path = parsePath(from: match.id) else { continue }
+            guard let path = Self.numericPath(from: match.id) else { continue }
             handled.insert(match.id)
             captureSubtree(info: info, windowID: match.id, path: path)
         }
@@ -502,18 +569,42 @@ public final class SyncEngine: @unchecked Sendable {
 
     /// Replaces only the entities of `windowID` with the freshly captured
     /// subtree; every other window keeps its previous entities byte-identical.
+    ///
+    /// Keep-filter is three-way, not just `windowID != windowID`: a subtree
+    /// re-capture also re-produces entities of nested windows (sheets,
+    /// drawers, Electron inner AXWindows) whose `windowID` points at the
+    /// nested window — filtering on the top-level id alone left them in
+    /// `keep` and the merged set ended up with the same path id twice.
+    /// 1. exact subtree ids (deterministic path-derived ids),
+    /// 2. the captured window's path namespace (covers budget-truncated
+    ///    re-captures that produced fewer ids than the previous sweep),
+    /// 3. the legacy windowID equality,
+    /// and the final id-dedup keeps the first occurrence.
     private func mergeWindow(previous: PipelineOutput, subtree: PipelineOutput, windowID: String) -> PipelineOutput {
-        let keep = previous.entities.filter { $0.windowID != windowID }
+        let subtreeIDs = Set(subtree.entities.map(\.id))
+        let keep = previous.entities.filter { e in
+            !subtreeIDs.contains(e.id) && !isInSubtreeNamespace(e.id, of: windowID) && e.windowID != windowID
+        }
         let entities = (keep + subtree.entities).sorted { $0.id < $1.id }
         let relations = computeRelations ? TopologyComputer().compute(entities: entities) : []
         return PipelineOutput(
             entities: entities,
             relations: relations,
-            index: SpatialIndex.build(from: entities),
+            index: SpatialIndex.build(from: entities, gridSize: indexGridSize),
             cgWindowCount: previous.cgWindowCount,
             axWindowCount: previous.axWindowCount,
             missingWindowTitles: previous.missingWindowTitles
         )
+    }
+
+    /// True when `id` is `windowID` itself or a path-descendant of it
+    /// ("pid:7:0-2" owns "pid:7:0-2-3-1"). Non-path ids (stabilized drift,
+    /// "mb" menu-bar ids) are never in the namespace.
+    private func isInSubtreeNamespace(_ id: String, of windowID: String) -> Bool {
+        guard let entityPath = Self.numericPath(from: id),
+              let windowPath = Self.numericPath(from: windowID) else { return false }
+        guard entityPath.count >= windowPath.count else { return false }
+        return zip(entityPath, windowPath).allSatisfy(==)
     }
 
     private func distanceFrom(_ entity: Entity, to rect: NormRect) -> Double {
@@ -524,7 +615,7 @@ public final class SyncEngine: @unchecked Sendable {
     }
 
     /// "pid:722:0-2-3" → [0, 2, 3]; nil for ids without a numeric path suffix.
-    private func parsePath(from id: String) -> [Int]? {
+    static func numericPath(from id: String) -> [Int]? {
         guard let suffix = id.split(separator: ":", maxSplits: 2).last else { return nil }
         let parts = suffix.split(separator: "-").compactMap { Int($0) }
         guard !parts.isEmpty, parts.count == suffix.split(separator: "-").count else { return nil }

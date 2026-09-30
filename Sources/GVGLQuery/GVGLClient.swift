@@ -75,20 +75,26 @@ public final class GVGLClient: @unchecked Sendable {
         return try decode(GVGLFrame.self, from: result)
     }
 
-    public func getFrameSince(_ since: UInt64, app: String? = nil) throws -> (frame: GVGLFrame?, changedApps: [String]) {
+    /// Incremental pull. `changedApps` describes mutations after `since` only
+    /// when `requiresFullRefresh` is false — the server cannot describe every
+    /// skipped mutation once its change log has rolled over, or when the cursor
+    /// came from a previous daemon instance. In that case `frame` is still a
+    /// COMPLETE snapshot: replace local state with it, but do not treat
+    /// `changedApps` as an exhaustive list of what changed.
+    public func getFrameSince(_ since: UInt64, app: String? = nil) throws -> (frame: GVGLFrame?, changedApps: [String], requiresFullRefresh: Bool) {
         let json = try call("get_frame", app: app, since: since)
         guard let result = json["result"] as? [String: Any] else {
             throw ClientError.malformedResponse("missing result")
         }
         if (result["event"] as? String) == "no_change" {
-            return (nil, [])
+            return (nil, [], false)
         }
         guard let frameValue = result["frame"] else {
             throw ClientError.malformedResponse("missing frame")
         }
         let frame = try decode(GVGLFrame.self, from: frameValue)
         let apps = result["changed_apps"] as? [String] ?? []
-        return (frame, apps)
+        return (frame, apps, result["requires_full_refresh"] as? Bool ?? false)
     }
 
     public func getStatus() throws -> [String: Any] {

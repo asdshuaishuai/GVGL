@@ -37,7 +37,7 @@ public struct TopologyComputer: Sendable {
             relations.append(r)
         }
 
-        let byID = Dictionary(uniqueKeysWithValues: entities.map { ($0.id, $0) })
+        let byID = Dictionary(entities.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         // 3.1 inside / contains from the entity tree.
         for e in entities {

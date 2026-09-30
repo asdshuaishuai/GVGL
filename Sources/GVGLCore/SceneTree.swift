@@ -20,14 +20,50 @@ public enum SceneTree {
     ///   depth) without pretending the subtree is empty.
     public static func build(entities: [Entity], depth: Int? = nil) -> [Entity] {
         guard !entities.isEmpty else { return [] }
-        let ids = Set(entities.map(\.id))
+        // Defensive dedup: duplicate ids would otherwise attach the same node
+        // twice under one parent. First occurrence wins (both capture paths
+        // emit id-sorted lists, so this is deterministic).
+        var seen = Set<String>()
+        seen.reserveCapacity(entities.count)
+        var unique: [Entity] = []
+        unique.reserveCapacity(entities.count)
+        for e in entities where seen.insert(e.id).inserted {
+            unique.append(e)
+        }
+        let ids = Set(unique.map(\.id))
+        let parentByID = Dictionary(unique.compactMap { entity -> (String, String)? in
+            guard let parent = entity.entityParentID,
+                  parent != entity.id,
+                  ids.contains(parent) else { return nil }
+            return (entity.id, parent)
+        }, uniquingKeysWith: { first, _ in first })
+        var cyclicIDs = Set<String>()
+        for entity in unique {
+            var path: [String] = []
+            var positions: [String: Int] = [:]
+            var current: String? = entity.id
+            while let id = current {
+                if let start = positions[id] {
+                    cyclicIDs.formUnion(path[start...])
+                    break
+                }
+                positions[id] = path.count
+                path.append(id)
+                current = parentByID[id]
+            }
+        }
+
         var childrenOf: [String: [Entity]] = [:]
         var roots: [Entity] = []
-        for e in entities {
-            if let parent = e.entityParentID, ids.contains(parent) {
-                childrenOf[parent, default: []].append(e)
+        for entity in unique {
+            var entity = entity
+            if cyclicIDs.contains(entity.id) || entity.entityParentID == entity.id {
+                entity.entityParentID = nil
+            }
+            if let parent = entity.entityParentID, ids.contains(parent) {
+                childrenOf[parent, default: []].append(entity)
             } else {
-                roots.append(e)
+                roots.append(entity)
             }
         }
 

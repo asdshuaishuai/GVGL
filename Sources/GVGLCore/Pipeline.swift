@@ -6,12 +6,14 @@ public struct PipelineOutput: Hashable, Sendable {
     public var index: SpatialIndex
     /// V2-3 CGWindow cross-check stats (0/0/[] when no probe data).
     public var cgWindowCount: Int
+    /// AX action probes that errored during capture (see AXAppSnapshot).
+    public var actionProbeFailures: Int
     public var axWindowCount: Int
     public var missingWindowTitles: [String]
 
     public static let empty = PipelineOutput(
         entities: [], relations: [], index: SpatialIndex(),
-        cgWindowCount: 0, axWindowCount: 0, missingWindowTitles: []
+        cgWindowCount: 0, actionProbeFailures: 0, axWindowCount: 0, missingWindowTitles: []
     )
 
     public init(
@@ -19,6 +21,7 @@ public struct PipelineOutput: Hashable, Sendable {
         relations: [Relation],
         index: SpatialIndex,
         cgWindowCount: Int = 0,
+        actionProbeFailures: Int = 0,
         axWindowCount: Int = 0,
         missingWindowTitles: [String] = []
     ) {
@@ -26,6 +29,7 @@ public struct PipelineOutput: Hashable, Sendable {
         self.relations = relations
         self.index = index
         self.cgWindowCount = cgWindowCount
+        self.actionProbeFailures = actionProbeFailures
         self.axWindowCount = axWindowCount
         self.missingWindowTitles = missingWindowTitles
     }
@@ -84,23 +88,35 @@ public final class Pipeline: @unchecked Sendable {
     public func process(_ snapshot: AXAppSnapshot) -> PipelineOutput {
         let coords = CoordinateComputer(screen: screen)
         let flat = flatten(snapshot.nodes)
-        let nodeByID = Dictionary(uniqueKeysWithValues: flat.map { ($0.id, $0) })
+        // Electron-class apps mutate their tree mid-walk often enough that the
+        // same path can be visited twice; uniqueKeysWithValues would trap the
+        // whole daemon on the first occurrence. First visit wins.
+        let nodeByID = Dictionary(flat.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         // Rule 1-3: role whitelist + drop group-like roles + drop degenerate frames.
         var entities: [Entity] = []
+        var emitted = Set<String>()
+        emitted.reserveCapacity(flat.count)
         for node in flat {
             guard let role = node.role, interactiveRoles.contains(role) else { continue }
             guard !["AXGroup", "AXScrollArea", "AXClipView"].contains(role) else { continue }
             guard let frame = node.frame, frame.width > 0, frame.height > 0,
                   frame.width * frame.height >= minArea else { continue }
+            // Duplicate path (tree mutated mid-walk): first visit wins, so the
+            // entity set — and every downstream id-keyed consumer — stays unique.
+            guard emitted.insert(node.id).inserted else { continue }
 
             // Screen Space = main-display normalization (original doc §2.2
             // 转换1: screen_norm.x = x / screenW). displayID is informational
             // metadata only — it never changes the coordinate semantics.
+            // V5 Display Space: per-display normalization of the SAME pixel
+            // rect; region labels derive from it (quadrants correct on every
+            // display).
             let display = displayFor(rect: frame)
             let screenRect = coords.screenNorm(frame)
+            let displayRect = display.map { coords.displayNorm(frame, display: $0) } ?? screenRect
             let windowRect = windowNormRect(for: node, nodeByID: nodeByID, coords: coords, screenRect: screenRect)
-            let geometry = Geometry(screen: screenRect, window: windowRect)
+            let geometry = Geometry(screen: screenRect, window: windowRect, display: displayRect)
 
             let entity = Entity(
                 id: node.id,
@@ -142,7 +158,7 @@ public final class Pipeline: @unchecked Sendable {
         // ancestor's coordinate system (V3). Resolution-independent: both
         // rects are in screen space, so the ratio cancels the display size.
         // Entities without an entity parent keep the unit rect.
-        let entityByID = Dictionary(uniqueKeysWithValues: entities.map { ($0.id, $0) })
+        let entityByID = Dictionary(entities.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for i in entities.indices {
             guard let parentID = entities[i].entityParentID,
                   let parent = entityByID[parentID] else { continue }
@@ -170,6 +186,7 @@ public final class Pipeline: @unchecked Sendable {
             relations: relations,
             index: index,
             cgWindowCount: windowStats.cgCount,
+            actionProbeFailures: snapshot.actionProbeFailures,
             axWindowCount: windowStats.axCount,
             missingWindowTitles: windowStats.missing
         )
@@ -227,22 +244,15 @@ public final class Pipeline: @unchecked Sendable {
         }
     }
 
+    /// Inverse of `screenNorm`: screen space is main-display-normalized
+    /// (rect / mainScreen), so the exact inverse is center * mainScreen —
+    /// never mix in per-display origins/sizes, which would double-offset
+    /// secondary-display elements and break CG matching there.
     private func pixelCenter(of entity: Entity) -> CGPoint {
-        if let display = display(withID: entity.displayID) {
-            return CGPoint(
-                x: display.x + entity.geometry.centerX * display.width,
-                y: display.y + entity.geometry.centerY * display.height
-            )
-        }
-        return CGPoint(
+        CGPoint(
             x: entity.geometry.centerX * screen.width,
             y: entity.geometry.centerY * screen.height
         )
-    }
-
-    private func display(withID id: Int?) -> DisplayInfo? {
-        guard let id else { return nil }
-        return screen.displays.first { $0.id == id }
     }
 
     // MARK: - Helpers

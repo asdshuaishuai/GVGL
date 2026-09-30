@@ -107,6 +107,12 @@ public struct AXAppSnapshot: Sendable {
     public var appName: String?
     public var nodes: [AXNode]
     public var visited: Int
+    /// How many times the AX action call ERRORED (as opposed to legitimately
+    /// reporting no actions). Non-zero means the `actions` field in this
+    /// snapshot is incomplete for an unknown reason — previously such errors
+    /// collapsed into an empty array and were indistinguishable from "this
+    /// element has no actions", which is how a broken field stays invisible.
+    public var actionProbeFailures: Int
     public var truncated: Bool
     public var error: AXSnapshotError?
     public var elapsed: TimeInterval
@@ -122,6 +128,7 @@ public struct AXAppSnapshot: Sendable {
         pid: Int32,
         nodes: [AXNode],
         visited: Int,
+        actionProbeFailures: Int = 0,
         truncated: Bool,
         error: AXSnapshotError?,
         elapsed: TimeInterval,
@@ -134,6 +141,7 @@ public struct AXAppSnapshot: Sendable {
         self.appName = appName
         self.nodes = nodes
         self.visited = visited
+        self.actionProbeFailures = actionProbeFailures
         self.truncated = truncated
         self.error = error
         self.elapsed = elapsed
@@ -163,12 +171,13 @@ public final class Snapshotter: @unchecked Sendable {
 
         var visited = 0
         var truncated = false
+        var actionProbeFailures = 0
 
         let root = walk(
             app, path: [], depth: 0,
             parentID: nil, windowID: nil,
             appKey: appKey, start: start,
-            visited: &visited, truncated: &truncated
+            visited: &visited, truncated: &truncated, actionProbeFailures: &actionProbeFailures
         )
 
         var nodes = root.map { [$0] } ?? []
@@ -180,14 +189,14 @@ public final class Snapshotter: @unchecked Sendable {
                menuBar, path: [], depth: 0,
                parentID: nil, windowID: nil,
                appKey: appKey, idPrefix: "mb", start: start,
-               visited: &visited, truncated: &truncated
+               visited: &visited, truncated: &truncated, actionProbeFailures: &actionProbeFailures
            ) {
             nodes.append(mbRoot)
         }
 
         var snapshot = AXAppSnapshot(
             appKey: appKey, pid: pid, nodes: nodes,
-            visited: visited, truncated: truncated,
+            visited: visited, actionProbeFailures: actionProbeFailures, truncated: truncated,
             error: nil, elapsed: Date().timeIntervalSince(start),
             cgDiagnosticsEnabled: config.cgProbeEnabled
         )
@@ -228,16 +237,17 @@ public final class Snapshotter: @unchecked Sendable {
 
         var visited = 0
         var truncated = false
+        var actionProbeFailures = 0
         let root = walk(
             element, path: path, depth: 0,
             parentID: nil, windowID: nil,
             appKey: appKey, start: start,
-            visited: &visited, truncated: &truncated
+            visited: &visited, truncated: &truncated, actionProbeFailures: &actionProbeFailures
         )
         guard let root else { return nil }
         return AXAppSnapshot(
             appKey: appKey, pid: pid, nodes: [root],
-            visited: visited, truncated: truncated,
+            visited: visited, actionProbeFailures: actionProbeFailures, truncated: truncated,
             error: nil, elapsed: Date().timeIntervalSince(start)
         )
     }
@@ -265,7 +275,8 @@ public final class Snapshotter: @unchecked Sendable {
         idPrefix: String? = nil,
         start: Date,
         visited: inout Int,
-        truncated: inout Bool
+        truncated: inout Bool,
+        actionProbeFailures: inout Int
     ) -> AXNode? {
         guard visited < config.nodeBudget else {
             truncated = true
@@ -278,6 +289,7 @@ public final class Snapshotter: @unchecked Sendable {
         visited += 1
 
         let attrs = readAttributes(element)
+        if !attrs.actionProbeOK { actionProbeFailures += 1 }
 
         let role = attrs.role
         let id = makeID(appKey: appKey, path: path, prefix: idPrefix)
@@ -313,7 +325,7 @@ public final class Snapshotter: @unchecked Sendable {
                 child, path: path + [i], depth: depth + 1,
                 parentID: id, windowID: ownWindowID,
                 appKey: appKey, idPrefix: idPrefix, start: start,
-                visited: &visited, truncated: &truncated
+                visited: &visited, truncated: &truncated, actionProbeFailures: &actionProbeFailures
             ) {
                 node.children.append(childNode)
             }
@@ -351,6 +363,9 @@ public final class Snapshotter: @unchecked Sendable {
         var size: CGSize?
         var children: [AXUIElement] = []
         var actions: [String] = []
+        /// False when the AX action call errored (as opposed to legitimately
+        /// reporting no actions). Carried out so the failure is countable.
+        var actionProbeOK = true
     }
 
     private func readAttributes(_ element: AXUIElement) -> AttrBatch {
@@ -365,9 +380,13 @@ public final class Snapshotter: @unchecked Sendable {
             kAXValueAttribute, kAXSubroleAttribute, kAXFocusedAttribute,
             kAXSelectedAttribute, kAXPlaceholderValueAttribute,
         ]
-        if config.includeActions {
-            names.append("AXActions")
-        }
+        // NOTE: "AXActions" is deliberately NOT in this batch. Asking for it
+        // via AXUIElementCopyAttributeValue fails with
+        // kAXErrorUnsupportedAttribute (-25205) on real elements, and when it
+        // does return, it is an array of {name, selector} dictionaries — never
+        // a [String], so the old `value as? [String]` could never succeed.
+        // Net effect was actions==[] for every entity in the frame. Actions
+        // come from AXUIElementCopyActionNames below.
 
         var values: CFArray?
         let err = AXUIElementCopyMultipleAttributeValues(
@@ -404,8 +423,6 @@ public final class Snapshotter: @unchecked Sendable {
                 batch.size = cgSize(from: value)
             case kAXChildrenAttribute:
                 batch.children = elements(from: value)
-            case "AXActions":
-                batch.actions = (value as? [String]) ?? []
             case kAXValueAttribute:
                 batch.value = Self.valueString(from: value)
             case kAXSubroleAttribute:
@@ -420,8 +437,55 @@ public final class Snapshotter: @unchecked Sendable {
                 break
             }
         }
+        if config.includeActions, let role = batch.role, Self.rolesWithActions.contains(role) {
+            let probe = Self.actionProbe(of: element)
+            batch.actions = probe.names
+            batch.actionProbeOK = probe.ok
+        } else {
+            batch.actionProbeOK = true   // not probed, so not a failure
+        }
         return batch
     }
+
+    /// Enumerable actions for an element, via the dedicated Action API.
+    ///
+    /// The Action API is the only correct source: the `AXActions` attribute
+    /// path is unsupported (-25205) on the elements that matter and returns a
+    /// shape (`[[String: String]]`) that the old `[String]` cast could never
+    /// match, which is why every entity in every frame reported zero actions —
+    /// silently starving both the topology score and the semantic action bridge.
+    ///
+    /// Cost: one AX round-trip per element, so it is gated on `includeActions`
+    /// and restricted to roles that can meaningfully carry actions.
+    static func actionNames(of element: AXUIElement) -> [String] {
+        var cfNames: CFArray?
+        guard AXUIElementCopyActionNames(element, &cfNames) == .success else { return [] }
+        return cfNames as? [String] ?? []
+    }
+
+    /// Same read, but reports whether the AX call actually succeeded.
+    ///
+    /// Distinguishing "AX says this element has no actions" from "the AX call
+    /// failed" matters: both used to collapse into an empty array, which is
+    /// precisely how a systematically broken field stays invisible.
+    static func actionProbe(of element: AXUIElement) -> (names: [String], ok: Bool) {
+        var cfNames: CFArray?
+        let err = AXUIElementCopyActionNames(element, &cfNames)
+        guard err == .success else { return ([], false) }
+        return (cfNames as? [String] ?? [], true)
+    }
+
+    /// Roles whose elements can carry actions. Text, images, cells and
+    /// containers never do, and asking every node in a dense tree (a web page
+    /// is thousands of static-text nodes) would add thousands of AX
+    /// round-trips per sweep for guaranteed-empty results.
+    static let rolesWithActions: Set<String> = [
+        "AXButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton",
+        "AXPopUpButton", "AXComboBox", "AXTextField", "AXTextArea",
+        "AXSecureTextField", "AXSlider", "AXIncrementor", "AXStepper",
+        "AXLink", "AXDisclosureTriangle", "AXTabButton", "AXSegmentedControl",
+        "AXToolbarButton", "AXSwitch", "AXRatingIndicator",
+    ]
 
     /// AXValue arrives in many shapes (String / NSNumber / CFBoolean /
     /// NSAttributedString / AXValue). Coerce to a short display string and
