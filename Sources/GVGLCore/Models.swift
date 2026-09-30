@@ -450,7 +450,13 @@ public struct SpatialIndex: Codable, Hashable, Sendable {
         return "r\(row)c\(col)"
     }
 
-    public static func build(from entities: [Entity], gridSize: Int = 4) -> SpatialIndex {
+    /// Default is the product default (`0` = linear scan), NOT a grid size.
+    /// An omitted argument must never silently change a frame's index shape:
+    /// the daemon runs linear by default, so a `4` default would make every
+    /// call site that forgets to pass the engine's gridSize quietly disagree
+    /// with the configured value (that exact mismatch shipped twice before —
+    /// V4.1 #5 `mergeWindow` and `IDStabilizer.remapped`).
+    public static func build(from entities: [Entity], gridSize: Int = 0) -> SpatialIndex {
         var idx = SpatialIndex(gridSize: gridSize)
         for e in entities {
             idx.byRegion[String(e.geometry.region.rawValue), default: []].append(e.id)
@@ -484,7 +490,9 @@ public protocol SpatialIndexBuilding: Sendable {
 public struct GridIndexBuilder: SpatialIndexBuilding {
     public var gridSize: Int
 
-    public init(gridSize: Int = 4) {
+    /// Defaults to the product default (linear scan) for the same reason as
+    /// `SpatialIndex.build` — see the note there.
+    public init(gridSize: Int = 0) {
         self.gridSize = gridSize
     }
 

@@ -46,6 +46,27 @@ final class GridIndexTests: XCTestCase {
         XCTAssertEqual(linear.byRole["AXButton"], ["a"])
     }
 
+    /// Omitting gridSize must be a no-op, not a silent configuration change.
+    /// The daemon runs linear scan by default (`--index-grid 0`); a call site
+    /// that forgets the argument and lands on a grid would make the frame's
+    /// index shape disagree with the engine's configuration. That mismatch has
+    /// shipped twice (V4.1 #5, and IDStabilizer.remapped), so pin it.
+    func testOmittedGridSizeMatchesTheProductDefault() {
+        let es = [entity("a", centerX: 0.1, centerY: 0.1)]
+
+        let implicitBuild = SpatialIndex.build(from: es)
+        let explicitLinear = SpatialIndex.build(from: es, gridSize: 0)
+        XCTAssertEqual(implicitBuild.gridSize, explicitLinear.gridSize,
+                       "implicit default must equal the product default (linear scan)")
+        XCTAssertTrue(implicitBuild.byGrid.isEmpty)
+        XCTAssertEqual(implicitBuild.byRole, explicitLinear.byRole)
+
+        let implicitBuilder = GridIndexBuilder().build(from: es)
+        XCTAssertEqual(implicitBuilder.gridSize, 0)
+        XCTAssertEqual(implicitBuilder.gridSize, LinearScanIndexBuilder().build(from: es).gridSize,
+                       "the default builder strategy must be the documented default")
+    }
+
     func testBackwardCompatibleDecode() {
         // V1 frames carry no byGrid/gridSize keys.
         let old = #"{"byRegion":{"q1":["a"]},"byRole":{"AXButton":["a"]},"byWindow":{"w":["a"]},"byApp":{"pid:1":["a"]}}"#
