@@ -3,15 +3,65 @@ import XCTest
 @testable import GVGLCore
 
 final class SyncEngineTests: XCTestCase {
+    /// The engine captures on `syncQueue` while the test thread configures the
+    /// mock and polls the counters, so every field needs a guard. Without one
+    /// the suite reports data races under Thread Sanitizer and the counters
+    /// can tear. Closures are copied out under the lock and invoked outside it,
+    /// so a test closure is free to touch the mock again.
     private final class MockCapturer: AppCapturing, @unchecked Sendable {
-        var snapshotCount = 0
-        var windowSnapshotCount = 0
-        var error: AXSnapshotError?
-        var makeNodes: (Int32) -> [AXNode] = { _ in [] }
-        var makeWindowNodes: (Int32, [Int]) -> AXAppSnapshot? = { _, _ in nil }
+        private let lock = NSLock()
+        private var storedSnapshotCount = 0
+        private var storedWindowSnapshotCount = 0
+        private var storedError: AXSnapshotError?
+        private var storedMakeNodes: (Int32) -> [AXNode] = { _ in [] }
+        private var storedMakeWindowNodes: (Int32, [Int]) -> AXAppSnapshot? = { _, _ in nil }
+
+        var snapshotCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return storedSnapshotCount
+        }
+
+        var windowSnapshotCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return storedWindowSnapshotCount
+        }
+
+        var error: AXSnapshotError? {
+            get {
+                lock.lock(); defer { lock.unlock() }
+                return storedError
+            }
+            set {
+                lock.lock(); storedError = newValue; lock.unlock()
+            }
+        }
+
+        var makeNodes: (Int32) -> [AXNode] {
+            get {
+                lock.lock(); defer { lock.unlock() }
+                return storedMakeNodes
+            }
+            set {
+                lock.lock(); storedMakeNodes = newValue; lock.unlock()
+            }
+        }
+
+        var makeWindowNodes: (Int32, [Int]) -> AXAppSnapshot? {
+            get {
+                lock.lock(); defer { lock.unlock() }
+                return storedMakeWindowNodes
+            }
+            set {
+                lock.lock(); storedMakeWindowNodes = newValue; lock.unlock()
+            }
+        }
 
         func snapshot(pid: Int32, appKey: String) -> AXAppSnapshot {
-            snapshotCount += 1
+            lock.lock()
+            storedSnapshotCount += 1
+            let error = storedError
+            let makeNodes = storedMakeNodes
+            lock.unlock()
             if let error {
                 return AXAppSnapshot(appKey: appKey, pid: pid, nodes: [], visited: 0, truncated: false, error: error, elapsed: 0)
             }
@@ -19,7 +69,10 @@ final class SyncEngineTests: XCTestCase {
         }
 
         func snapshotWindow(pid: Int32, appKey: String, path: [Int]) -> AXAppSnapshot? {
-            windowSnapshotCount += 1
+            lock.lock()
+            storedWindowSnapshotCount += 1
+            let makeWindowNodes = storedMakeWindowNodes
+            lock.unlock()
             return makeWindowNodes(pid, path)
         }
     }
@@ -231,6 +284,45 @@ final class SyncEngineTests: XCTestCase {
 
         engine.refreshScreen()
         XCTAssertEqual(engine.screen, newScreen)
+    }
+
+    /// The screen accessor is a lock-protected snapshot, so concurrent
+    /// readers must always observe one of the published values — never a torn
+    /// mix of two, and never a hang. (Run under Thread Sanitizer this also
+    /// proves the read/write pair is actually guarded; the assertion alone
+    /// only proves the values are self-consistent.)
+    func testScreenAccessorIsSafeUnderConcurrentReadWrite() {
+        let model = DesktopModel()
+        let capturer = MockCapturer()
+        let engine = SyncEngine(model: model, capturer: capturer, screen: screen, debounceInterval: 0.02)
+
+        // Two distinct, individually self-consistent screens. A torn read
+        // would mix e.g. A's width with B's height.
+        let screenA = ScreenInfo(width: 1000, height: 800, scaleFactor: 2)
+        let screenB = ScreenInfo(width: 3440, height: 1440, scaleFactor: 1)
+        let published: Set<ScreenInfo> = [screenA, screenB]
+
+        engine.screenReader = { screenB }
+        let iterations = 2000
+        let flagLock = NSLock()
+        var readsOK = true
+
+        DispatchQueue.concurrentPerform(iterations: iterations) { i in
+            if i % 2 == 0 {
+                engine.refreshScreen()
+            } else {
+                let observed = engine.screen
+                if !published.contains(observed) {
+                    flagLock.lock()
+                    readsOK = false
+                    flagLock.unlock()
+                }
+            }
+        }
+
+        XCTAssertTrue(readsOK, "observed a value that was never published (torn read)")
+        // The last writer wins, but the value must be one of the published set.
+        XCTAssertTrue(published.contains(engine.screen))
     }
 
     // MARK: - Reconciler batch selection (V3 speedup)
