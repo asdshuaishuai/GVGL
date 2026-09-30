@@ -297,6 +297,10 @@ def score_entity(e: dict, role: str | None, label: str | None,
     return total, breakdown
 
 # ---------------------------------------------------------------------------
+class CellFilterUnavailable(RuntimeError):
+    """--cell was used against a frame that has no grid to filter on."""
+
+
 # Query (§6.1)
 
 def query(client: GVGLClient, role: str | None = None, label: str | None = None,
@@ -317,8 +321,29 @@ def query(client: GVGLClient, role: str | None = None, label: str | None = None,
         region_set = set(region_ids)
         candidates = [e for e in candidates if e["id"] in region_set]
     elif cell:
-        # V2-1 grid pre-filter: index.byGrid[cell] (spatial hash).
-        grid_ids = set(frame["index"].get("byGrid", {}).get(cell, []))
+        # Grid pre-filter. This reads index.byGrid, which only exists when the
+        # daemon was started with a non-zero --index-grid. Under the default
+        # (linear) index byGrid is empty, so a cell query used to return
+        # `not_found` — silently, as if the cell genuinely held nothing. The
+        # cell a user asks about is well-defined regardless of how the frame
+        # happens to be indexed, so say what is actually wrong instead.
+        index = frame["index"]
+        grid_size = index.get("gridSize", 0) or 0
+        if not grid_size:
+            raise CellFilterUnavailable(
+                f"this daemon runs a linear index (index.gridSize=0), so there "
+                f"are no grid cells to filter on. Restart it with "
+                f"--index-grid N (e.g. --index-grid 4) to use --cell, or use "
+                f"--region q1..q4 / --display, which work in either mode."
+            )
+        by_grid = index.get("byGrid") or {}
+        if cell not in by_grid:
+            valid = ", ".join(sorted(by_grid)[:8]) or "(none)"
+            raise CellFilterUnavailable(
+                f"cell {cell!r} does not exist in a {grid_size}x{grid_size} "
+                f"grid (valid: {valid})"
+            )
+        grid_ids = set(by_grid[cell])
         candidates = [e for e in candidates if e["id"] in grid_ids]
     if display is not None:
         # V5: physical-display filter (CGDirectDisplayID, see `map` output) —
@@ -413,6 +438,9 @@ def cmd_query(args):
             cell=args.cell, app=args.app, display=args.display,
             ref_id=args.reference, ref_dir=args.relation, top=args.top,
         )
+    except CellFilterUnavailable as exc:
+        print(f"query unavailable: {exc}", file=sys.stderr)
+        return 2
     except (ConnectionError, OSError, RuntimeError) as exc:
         print(f"query failed: {exc}", file=sys.stderr)
         return 1

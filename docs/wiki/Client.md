@@ -13,6 +13,12 @@ python3 client/gvgl_query.py subscribe --pull                # 推送订阅 + �
 python3 client/gvgl_query.py watch --interval 0.5            # 轮询观察 version（备选）
 ```
 
+> `--cell` 依赖帧里的**网格索引**，而守护进程默认跑线性索引（`index.gridSize=0`）。
+> 此时 `byGrid` 为空——以前 `--cell` 会静默返回 `not_found`，仿佛那个格子里
+> 真的什么都没有。现在会明确报错并以 **exit 2** 退出，告诉你要么用
+> `--index-grid N` 重启，要么改用 `--region` / `--display`（两种模式都可用）。
+> 格名越界（如 4×4 下的 `r9c9`）同样报错并列出合法值。
+
 - `--cliclick` 打印可执行命令；`--execute` 直接执行（需 `brew install cliclick`）。
 - `--json` 输出机器可读结果（含 `status`/`hits`/`best`/`elements`）。
 - socket 可用 `--socket PATH` 或环境变量 `GVGL_SOCKET` 指定。
