@@ -392,12 +392,26 @@ def cmd_status(args):
     client = GVGLClient(args.socket)
     try:
         st = client.call("get_status")
-        print(json.dumps(st, indent=2, ensure_ascii=False))
-        return 0
     except (ConnectionError, OSError) as exc:
         print(f"cannot reach daemon at {args.socket}: {exc}", file=sys.stderr)
         print("start it with: .build/debug/gvgl", file=sys.stderr)
         return 1
+    except RuntimeError as exc:
+        # A daemon-side error is a user-facing condition, not a crash: report it
+        # on stderr instead of letting it surface as a Python traceback.
+        print(f"daemon error: {exc}", file=sys.stderr)
+        return 1
+
+    # stdout stays machine-readable JSON; guidance goes to stderr so piping into
+    # jq/another tool keeps working.
+    print(json.dumps(st, indent=2, ensure_ascii=False))
+    if not st.get("permissionGranted", True):
+        print("", file=sys.stderr)
+        print("辅助功能权限未授予 —— 桌面内容将全部报告 permission_denied。", file=sys.stderr)
+        print("  系统设置 › 隐私与安全性 › 辅助功能 中启用本程序（终端，", file=sys.stderr)
+        print("  或经 launchd 运行的 gvgl 二进制本身），然后重启守护进程。", file=sys.stderr)
+        return 3
+    return 0
 
 def cmd_frame(args):
     client = GVGLClient(args.socket)
