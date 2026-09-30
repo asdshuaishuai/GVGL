@@ -282,7 +282,17 @@ def score_entity(e: dict, role: str | None, label: str | None,
     if e.get("actions"):
         topo += 0.4
 
-    total = sem * 0.35 + role_s * 0.20 + spatial * 0.25 + size * 0.10 + topo * 0.10
+    # A query that names no reference entity has no spatial criterion at all:
+    # nothing was asked about position, so position is neither evidence nor a
+    # failure. Summing only the remaining 0.75 of weight while the hit gate
+    # (0.7) is calibrated on a 0...1 score capped a *perfect* match at 0.75 and
+    # left only 0.05 of headroom, so an exact label+role hit on a small
+    # control (a standard dialog button scores 0.2 on size) landed in
+    # `ambiguous` for lack of room rather than lack of evidence. Normalize by
+    # the applicable weight — ordering between candidates is untouched.
+    # Must stay identical to QueryEngine.score in Sources/GVGLQuery.
+    applicable = 0.75 if ref is None else 1.0
+    total = (sem * 0.35 + role_s * 0.20 + spatial * 0.25 + size * 0.10 + topo * 0.10) / applicable
     breakdown = dict(semantic=sem, role=role_s, spatial=spatial, size=size, topology=topo)
     return total, breakdown
 

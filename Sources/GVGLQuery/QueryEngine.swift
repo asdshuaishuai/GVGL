@@ -203,11 +203,23 @@ public enum QueryEngine {
         if entity.enabled { topology += 0.3 }
         if !entity.actions.isEmpty { topology += 0.4 }
 
-        let total = semantic * weights.semantic
-            + roleScore * weights.role
-            + spatial * weights.spatial
-            + size * weights.size
-            + topology * weights.topology
+        // A query that names no reference entity has no spatial criterion at
+        // all — nothing was asked about position, so position is neither
+        // evidence nor a failure. Summing only the remaining 0.75 of weight
+        // while the hit gate is calibrated on a 0...1 score capped a *perfect*
+        // match at 0.75, leaving 0.05 of headroom over the 0.7 gate; an exact
+        // label+role hit on a small control (a standard dialog button scores
+        // 0.2 on size) therefore landed in `ambiguous` for lack of room rather
+        // than for lack of evidence. Normalize by the weight that actually
+        // applies — ordering between candidates is untouched, only the scale.
+        let applicableWeight = (ref == nil) ? (1.0 - weights.spatial) : 1.0
+        let total = (
+            semantic * weights.semantic
+                + roleScore * weights.role
+                + spatial * weights.spatial
+                + size * weights.size
+                + topology * weights.topology
+        ) / applicableWeight
         return (total, [
             "semantic": semantic, "role": roleScore, "spatial": spatial,
             "size": size, "topology": topology,

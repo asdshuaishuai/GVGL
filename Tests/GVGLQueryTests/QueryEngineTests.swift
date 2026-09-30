@@ -147,9 +147,42 @@ final class QueryEngineTests: XCTestCase {
         let e = entity("a", role: "AXButton", title: "登录", rect: NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05))
         let params = QueryParams(role: "AXButton", label: "登录")
         let (total, b) = score(e, params)
-        // Exact title match → semantic 1.0.
-        XCTAssertEqual(total, 1.0 * 0.35 + 1.0 * 0.20 + 1.0 * 0.10 + 1.0 * 0.10, accuracy: 1e-9)
+        // Exact title match → semantic 1.0. No reference entity was named, so
+        // the spatial criterion does not apply and the applicable weights are
+        // normalized — a perfect match is a perfect 1.0, not a 0.75 ceiling.
+        XCTAssertEqual(total, 1.0, accuracy: 1e-9)
         XCTAssertEqual(b["semantic"], 1.0)
+    }
+
+    /// The score must span the full 0...1 range for a query that names no
+    /// reference entity, so an exact label+role hit is not dragged under the
+    /// 0.7 hit gate purely for lack of headroom. (Regression: a standard
+    /// dialog button scores 0.2 on size, which used to be enough to turn an
+    /// exact match into `ambiguous`.)
+    func testExactMatchWithoutSpatialClauseReachesHit() {
+        // ~82x26 px on a 3440x1440 display: a normal dialog button.
+        let dialogButton = entity("a", role: "AXButton", title: "登录",
+                                  rect: NormRect(x: 0.5317, y: 0.2938, w: 0.0238, h: 0.0181))
+        let result = QueryEngine.query(
+            frame: frame([dialogButton]),
+            params: QueryParams(role: "AXButton", label: "登录")
+        )
+        XCTAssertEqual(result.status, .hit,
+                       "exact label+role match on a normal dialog button should be actionable, "
+                       + "got \(result.status) with score \(result.best?.score ?? -1)")
+    }
+
+    /// Normalizing must not flatten the ranking: among no-spatial candidates a
+    /// weak match still has to lose to an exact one.
+    func testNormalizationKeepsRelativeOrdering() {
+        let exact = entity("a", role: "AXButton", title: "登录", rect: NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05))
+        let weak = entity("b", role: "AXButton", title: "其他", rect: NormRect(x: 0.5, y: 0.5, w: 0.05, h: 0.05))
+        let result = QueryEngine.query(
+            frame: frame([weak, exact]),
+            params: QueryParams(role: "AXButton", label: "登录")
+        )
+        XCTAssertEqual(result.best?.id, "a")
+        XCTAssertEqual(result.status, .hit)
     }
 
     func testStatusGates() {
