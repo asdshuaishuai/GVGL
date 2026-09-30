@@ -24,6 +24,29 @@ final class DesktopModelTests: XCTestCase {
         AppSnapshot(appKey: key, pid: pid, bundleID: nil, name: name, status: .warming, capturedAt: Date(), entityCount: 0)
     }
 
+    /// Re-capturing an app whose AX tree came back byte-identical is not a
+    /// desktop change. The reconciler re-captures every app each cycle, so
+    /// bumping here makes the version — and therefore every subscriber's
+    /// "changed" push and every `get_frame?since` pull — churn on a desktop
+    /// where nothing moved. Measured live: ~6-7 version bumps/second with zero
+    /// client activity, which makes the incremental protocol unusable.
+    func testUpsertWithIdenticalOutputDoesNotBumpVersion() {
+        let model = DesktopModel()
+        let out = output("e1")
+        let fixed = Date(timeIntervalSince1970: 1_700_000_000)
+        func snapshot() -> AppSnapshot {
+            AppSnapshot(appKey: "pid:1", pid: 1, bundleID: nil, name: "A",
+                        status: .warming, capturedAt: fixed, entityCount: 0)
+        }
+        model.upsert(appKey: "pid:1", output: out, meta: snapshot())
+        let v = model.version
+
+        for _ in 0..<5 {
+            model.upsert(appKey: "pid:1", output: out, meta: snapshot())
+        }
+        XCTAssertEqual(model.version, v, "identical re-capture is not a mutation")
+    }
+
     func testUpsertAggregatesAndBumpsVersion() {
         let model = DesktopModel()
         model.upsert(appKey: "pid:1", output: output("e1"), meta: meta("pid:1", 1, "A"))
@@ -112,8 +135,12 @@ final class DesktopModelTests: XCTestCase {
     func testVersionMonotonic() {
         let model = DesktopModel()
         let v0 = model.version
+        // Three DISTINCT mutations. (This used to upsert the same app twice
+        // with identical output and expect three bumps — i.e. it encoded the
+        // phantom-bump behavior that testUpsertWithIdenticalOutputDoesNotBumpVersion
+        // now rules out.)
         model.upsert(appKey: "pid:1", output: output("e1"), meta: meta("pid:1", 1, "A"))
-        model.upsert(appKey: "pid:1", output: output("e1"), meta: meta("pid:1", 1, "A"))
+        model.upsert(appKey: "pid:2", output: output("e2"), meta: meta("pid:2", 2, "B"))
         model.removeApp(appKey: "pid:1")
         XCTAssertGreaterThan(model.version, v0 + 2)
     }

@@ -33,6 +33,10 @@ import time
 DEFAULT_SOCKET = f"{os.path.expanduser('~')}/.gvgl/gvgl.sock"
 CONNECT_ATTEMPTS = 200
 CONNECT_BACKOFF_S = 0.01
+# The server notices a vanished subscriber when it next writes to that socket.
+# On a quiet desktop that is the ~60s ping cadence, so resource checks have to
+# wait at least that long or they measure a snapshot taken mid-reap.
+REAP_WAIT_S = 75
 
 
 class Failure(Exception):
@@ -237,14 +241,20 @@ def main():
             s.close()  # disconnect immediately after ack
             if i % 50 == 0:
                 alive()
-        time.sleep(7)
+        # Must outlast the dead-client reaping path, or this measures a
+        # mid-reap snapshot and would pass even with a real fd leak. A dead
+        # subscriber is only noticed when the server next writes to it, and on
+        # a quiet desktop that is the ~60s ping cadence — not version churn,
+        # which the daemon no longer manufactures on an idle desktop.
+        time.sleep(REAP_WAIT_S)
         after = resources(pid)
         if not before or not after:
             return "pid unknown, skipped resource check"
         dfd = after["fds"] - before["fds"]
         dthr = after["threads"] - before["threads"]
         if dfd > 8:
-            raise Failure(f"fd leak: {before['fds']} -> {after['fds']} over {args.churn} cycles")
+            raise Failure(f"fd leak: {before['fds']} -> {after['fds']} over {args.churn} cycles "
+                          f"(waited {REAP_WAIT_S}s for reaping)")
         if dthr > 8:
             raise Failure(f"thread leak: {before['threads']} -> {after['threads']}")
         return (f"{args.churn} cycles, fds {before['fds']}->{after['fds']}, "

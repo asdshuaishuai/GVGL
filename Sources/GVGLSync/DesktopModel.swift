@@ -100,7 +100,8 @@ public final class DesktopModel: @unchecked Sendable {
     public func upsert(appKey: String, output: PipelineOutput, meta: AppSnapshot, truncated: Bool = false) {
         lock.lock()
         defer { lock.unlock() }
-        let previous = apps[appKey]?.output.entities ?? []
+        let previousState = apps[appKey]
+        let previous = previousState?.output.entities ?? []
         // Model-boundary invariant: one live entity per id. Any duplicate that
         // slips through a capture/merge path would corrupt the scene tree and
         // every id-keyed consumer (index, client lookups).
@@ -139,8 +140,38 @@ public final class DesktopModel: @unchecked Sendable {
         var m = meta
         m.entityCount = finalOutput.entities.count
         m.status = .synced
-        apps[appKey] = AppState(output: finalOutput, meta: m, truncated: truncated)
-        bumpVersionLocked(appKey, regions: Self.changedRegionBuckets(previous: previous, current: stabilized))
+        let newState = AppState(output: finalOutput, meta: m, truncated: truncated)
+        apps[appKey] = newState
+        // The reconciler re-captures every app on every cycle, so an unchanged
+        // app must not count as a change — otherwise the version churns
+        // continuously on a desktop where nothing is happening, and every
+        // subscriber gets a "changed" push (and every `get_frame?since` pull
+        // returns a full frame) several times a second for nothing.
+        guard Self.isObservableChange(from: previousState, to: newState) else { return }
+        bumpVersionLocked(appKey, regions: Self.changedRegionBuckets(previous: previous, current: finalOutput.entities))
+    }
+
+    /// Whether replacing `old` with `new` changes anything a client can
+    /// observe in a frame.
+    ///
+    /// `capturedAt` is deliberately excluded: it records when we last *looked*,
+    /// not what the desktop looks like. A consequence, stated plainly because
+    /// it is observable: a frame's `capturedAt` tracks the last real change for
+    /// that app, not the last capture. Clients that want capture freshness can
+    /// call `get_frame` (always re-materialized) rather than the incremental
+    /// path.
+    ///
+    /// Relations are ignored too: V4 frames are scene trees and no longer
+    /// serialize relations, so they are not part of the observable frame.
+    static func isObservableChange(from old: AppState?, to new: AppState) -> Bool {
+        guard let old else { return true }   // newly observed app
+        if old.truncated != new.truncated { return true }
+        if old.meta.status != new.meta.status { return true }
+        if old.meta.pid != new.meta.pid { return true }
+        if old.meta.bundleID != new.meta.bundleID { return true }
+        if old.meta.name != new.meta.name { return true }
+        if old.meta.entityCount != new.meta.entityCount { return true }
+        return old.output.entities != new.output.entities
     }
 
     /// Records an app's sync status. No-op when the status is already that
