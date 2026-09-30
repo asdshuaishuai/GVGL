@@ -80,12 +80,28 @@ agent 的首次拉取（KB 级）：先看"哪块屏哪个象限有哪些窗口"
 不推送；`since` 增量拉取不受影响，仍返回完整帧。`sys`（前台 App 变化）需显式加入
 掩码才会收到。
 
+**连接数上限**：
+
+```
+→ {"method":"subscribe"}   （已达上限时）
+← {"error":{"code":"too_many_subscriptions","message":"subscription limit reached (256); retry later"}}
+```
+
+每条订阅占用一个专属线程（**不能**放在处理请求的并发队列上：长连接会永久占住
+GCD 约 64 个 worker 线程，实测订阅数到 63 时守护进程整体静默——不报错、不退出、
+只是再也不响应任何请求）。因此订阅数硬上限 256，超出**显式拒绝**而不是悄悄卡死。
+连接断开后槽位自动归还，实测 512 次订阅生命周期后仍能满额接受。
+
+> 客户端注意：`listen()` backlog 只有 16，**瞬间**打开大量连接可能拿到 EAGAIN。
+> 这是 backlog 的正常行为，重试即可，不是守护进程故障。
+
 ## 错误码
 
 ```
 {"error":{"code":"permission_denied","message":"..."}}
 {"error":{"code":"invalid_method","message":"..."}}
 {"error":{"code":"invalid_request","message":"..."}}
+{"error":{"code":"too_many_subscriptions","message":"..."}}
 {"error":{"code":"internal","message":"..."}}
 ```
 

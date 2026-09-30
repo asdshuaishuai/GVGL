@@ -67,6 +67,33 @@ final class SubscribeServerTests: XCTestCase {
         return fd
     }
 
+    /// `listen()` backlog is deliberately small (16), so opening many
+    /// connections back-to-back can transiently exceed it. Retry briefly: the
+    /// accept loop drains it, and a load test that dies on EAGAIN would report
+    /// a flaky server instead of the property under test.
+    private func clientSocketRetrying(attempts: Int = 200) -> Int32 {
+        for _ in 0..<attempts {
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            _ = withUnsafeMutablePointer(to: &addr.sun_path) { pathPtr in
+                pathPtr.withMemoryRebound(to: Int8.self, capacity: 108) { dst in
+                    strlcpy(dst, socketPath, 108)
+                }
+            }
+            let rc = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            if rc == 0 { return fd }
+            close(fd)
+            usleep(10_000)
+        }
+        XCTFail("could not connect after \(attempts) attempts")
+        return -1
+    }
+
     private func sendLine(_ fd: Int32, _ line: String) {
         let payload = (line + "\n").data(using: .utf8)!
         payload.withUnsafeBytes { _ = write(fd, $0.baseAddress, payload.count) }
@@ -243,6 +270,47 @@ final class SubscribeServerTests: XCTestCase {
         XCTAssertTrue(ack.contains(#""version":\#(current)"#), "got: \(ack)")
         XCTAssertTrue(ack.contains(#""requires_full_refresh":false"#), "got: \(ack)")
         close(fd)
+    }
+
+    /// Long-lived subscriptions must not be able to starve the server. The
+    /// push loop used to run on the same concurrent queue that accepts and
+    /// serves requests, so every parked subscriber burned one of GCD's ~64
+    /// worker threads; past that the daemon silently stopped answering
+    /// anything (measured live: wedged at 63 connections, no error, no log).
+    /// The daemon is alive, so only a real request proves the property.
+    func testManyConcurrentSubscriptionsDoNotStarveTheServer() {
+        let subscribers = (0..<80).map { _ in clientSocketRetrying() }
+        defer { subscribers.forEach { close($0) } }
+        for fd in subscribers {
+            sendLine(fd, #"{"method":"subscribe"}"#)
+            XCTAssertTrue(readLine(fd).contains(#""event":"subscribed""#))
+        }
+
+        // With every subscription parked, a fresh request must still be served.
+        let probe = clientSocketRetrying()
+        sendLine(probe, #"{"method":"get_status"}"#)
+        let line = readLine(probe, timeout: 10)
+        close(probe)
+        XCTAssertTrue(line.contains(#""monitoredApps""#), "server stopped answering under load: got: \(line)")
+    }
+
+    /// Past the cap the daemon must refuse loudly rather than accept a
+    /// subscription it has no thread to run.
+    func testSubscribeIsRefusedPastTheCap() {
+        let held = (0..<256).map { _ in clientSocketRetrying() }
+        var lastAck = ""
+        for fd in held {
+            sendLine(fd, #"{"method":"subscribe"}"#)
+            lastAck = readLine(fd, timeout: 10)
+        }
+        defer { held.forEach { close($0) } }
+
+        let fd = clientSocketRetrying()
+        sendLine(fd, #"{"method":"subscribe"}"#)
+        let refused = readLine(fd, timeout: 10)
+        close(fd)
+        XCTAssertTrue(refused.contains(#""code":"too_many_subscriptions""#),
+                      "expected an explicit refusal, got: \(refused) (last ack: \(lastAck))")
     }
 
     /// V5.1: region-masked subscription — only bumps touching a masked bucket

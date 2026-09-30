@@ -34,6 +34,11 @@ public final class SocketServer: @unchecked Sendable {
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var running = false
+    /// Live push subscriptions, each parked on its own thread (see
+    /// `pushThread`). Bounded so that a client opening thousands of
+    /// subscriptions is refused rather than exhausting the process.
+    private var activeSubscriptions = 0
+    private let maxSubscriptions = 256
 
     public init(socketPath: String, model: DesktopModel, engine: SyncEngine, verbose: Bool = false) {
         self.socketPath = socketPath
@@ -43,6 +48,15 @@ public final class SocketServer: @unchecked Sendable {
     }
 
     public func start() throws {
+        // This server writes to client sockets for as long as a subscription
+        // lives. A client that disconnects mid-write turns that into SIGPIPE,
+        // whose default action kills the whole process — the daemon would die
+        // because an agent closed its connection. The policy belongs to
+        // whoever owns the socket I/O, so set it here rather than relying on
+        // every embedder to repeat it (writes then return EPIPE and the push
+        // loop exits cleanly).
+        signal(SIGPIPE, SIG_IGN)
+
         let dir = (socketPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
             atPath: dir, withIntermediateDirectories: true
@@ -116,7 +130,11 @@ public final class SocketServer: @unchecked Sendable {
     }
 
     private func handleConnection(_ fd: Int32) {
-        defer { close(fd) }
+        // Ownership moves to the push thread when the client subscribes; until
+        // then this function closes it. Closing unconditionally here would
+        // yank the fd out from under a live subscription.
+        var ownsFD = true
+        defer { if ownsFD { close(fd) } }
 
         var timeout = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
@@ -139,7 +157,15 @@ public final class SocketServer: @unchecked Sendable {
             _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, bytes.count) }
         }
         if let subscription {
-            pushLoop(fd, from: subscription.lastVersion, mask: subscription.mask)
+            // The push loop blocks for the connection's whole lifetime, so it
+            // must NOT run on `queue`: a long-lived subscription would pin one
+            // of GCD's ~64 worker threads — the same pool that accepts and
+            // serves requests — and enough subscribers would starve the daemon
+            // completely (measured: wedged at 63, no error, no log). Hand it a
+            // dedicated thread and the request path keeps its own pool.
+            ownsFD = false   // the push thread closes fd when its loop ends
+            pushThread(fd, subscription)
+            return
         }
         if verbose {
             fputs("gvgl: served \(requestLine.prefix(60)) -> \(response.count) bytes in \(Int(Date().timeIntervalSince(started) * 1000))ms\n", stderr)
@@ -147,6 +173,40 @@ public final class SocketServer: @unchecked Sendable {
     }
 
     // MARK: - Push subscription
+
+    /// Runs one subscription's push loop on its own thread and takes over `fd`
+    /// (closing it when the loop ends). Threads are pooled per real subscriber
+    /// rather than per shared-pool slot; the count is capped by
+    /// `maxSubscriptions` so overload is refused loudly instead of silently
+    /// wedging the daemon.
+    private func pushThread(_ fd: Int32, _ subscription: Subscription) {
+        let thread = Thread { [weak self] in
+            defer { close(fd) }
+            defer { self?.releaseSubscription() }
+            self?.pushLoop(fd, from: subscription.lastVersion, mask: subscription.mask)
+        }
+        thread.name = "gvgl.push"
+        // These threads are almost entirely parked in waitForVersion; a small
+        // stack keeps many concurrent subscriptions cheap.
+        thread.stackSize = 512 * 1024
+        thread.start()
+    }
+
+    /// Reserves one subscription slot. Returns false at the cap — callers must
+    /// then refuse the request rather than accept work they cannot run.
+    private func reserveSubscription() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeSubscriptions < maxSubscriptions else { return false }
+        activeSubscriptions += 1
+        return true
+    }
+
+    private func releaseSubscription() {
+        lock.lock()
+        activeSubscriptions -= 1
+        lock.unlock()
+    }
 
     /// Long-lived push loop: writes one NDJSON event line per model version
     /// bump. With a region mask (V5.1), only bumps touching one of the masked
@@ -163,6 +223,14 @@ public final class SocketServer: @unchecked Sendable {
         // wake-up, so iteration counting would never reach the threshold.
         var maskedVersions: UInt64 = 0
         while true {
+            // stop() doesn't track client fds, so without this every parked
+            // push thread would outlive the server and keep pinging for up to
+            // a minute after shutdown.
+            lock.lock()
+            let serverRunning = running
+            lock.unlock()
+            guard serverRunning else { return }
+
             guard model.waitForVersion(after: last, timeout: 5) != nil else {
                 // No change within the window. Ping occasionally so a dead
                 // client on a quiet desktop is detected and reaped.
@@ -303,6 +371,15 @@ public final class SocketServer: @unchecked Sendable {
             return (text, nil)
 
         case "subscribe":
+            // Reserve the push thread's slot before promising a stream: past
+            // the cap we must say so, not hand back a subscription that would
+            // never be served.
+            guard reserveSubscription() else {
+                return (Self.errorResponse(
+                    "too_many_subscriptions",
+                    "subscription limit reached (\(maxSubscriptions)); retry later"
+                ), nil)
+            }
             // One atomic read: the acked version and the push cursor must be
             // the same number, otherwise the client believes it is current at
             // version N while the loop replays from N-1 (duplicate) or sits
