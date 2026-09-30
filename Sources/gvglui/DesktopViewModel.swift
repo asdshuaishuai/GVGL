@@ -28,6 +28,11 @@ final class DesktopViewModel: ObservableObject {
         let time: Date
         let version: UInt64
         let changedApps: [String]
+        /// The daemon could not describe every skipped mutation (change log
+        /// rolled over, or the cursor came from a previous daemon). The frame
+        /// is complete, but `changedApps` is NOT an exhaustive list — the UI
+        /// must not present it as one.
+        let requiresFullRefresh: Bool
     }
     @Published var events: [FrameEvent] = []
     private let eventCapacity = 50
@@ -91,10 +96,13 @@ final class DesktopViewModel: ObservableObject {
         do {
             try process.run()
             fputs("gvglui: embedded daemon started\n", stderr)
-            // Give it a moment, then refresh.
+            // Give it a moment, then refresh. `refresh()` is synchronous
+            // @MainActor (it schedules its own Task), so there is nothing to
+            // await here — the previous `await refresh()` was a no-op that
+            // only compiled with a warning.
             Task {
                 try? await Task.sleep(nanoseconds: 800_000_000)
-                await refresh()
+                self.refresh()
             }
         } catch {
             errorMessage = "启动守护进程失败: \(error.localizedDescription)"
@@ -109,6 +117,12 @@ final class DesktopViewModel: ObservableObject {
                     try client.getFrame()
                 }.value
                 self.frame = frame
+                // Keep the cursor in step with the frame we just took. Leaving
+                // it stale (it was previously only set by watchStep) made the
+                // next poll use a cursor from an older daemon incarnation —
+                // which the server now answers with a full refresh, so it
+                // self-heals, but only after a wasted round trip.
+                self.lastVersion = frame.version
                 self.connected = true
                 self.errorMessage = nil
                 fputs("gvglui: frame v\(frame.version) entities=\(frame.allEntities.count)\n", stderr)
@@ -149,7 +163,8 @@ final class DesktopViewModel: ObservableObject {
                 connected = true
                 events.insert(
                     FrameEvent(time: Date(), version: newFrame.version,
-                               changedApps: result.changedApps),
+                               changedApps: result.changedApps,
+                               requiresFullRefresh: result.requiresFullRefresh),
                     at: 0
                 )
                 if events.count > eventCapacity {

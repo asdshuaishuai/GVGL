@@ -68,9 +68,17 @@ struct SidebarView: View {
                             Text(event.time, format: .dateTime.hour().minute().second())
                             Text("v\(event.version)")
                                 .foregroundStyle(.secondary)
+                            if event.requiresFullRefresh {
+                                // The daemon could not enumerate what it
+                                // skipped; listing apps here would be a lie.
+                                Text("全量")
+                                    .foregroundStyle(.orange)
+                            }
                         }
                         .font(.caption2.monospacedDigit())
-                        Text(event.changedApps.map { appName(for: $0) }.joined(separator: ", "))
+                        Text(event.requiresFullRefresh
+                             ? "变更日志已滚动，未能列全变更（已整帧刷新）"
+                             : event.changedApps.map { appName(for: $0) }.joined(separator: ", "))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
