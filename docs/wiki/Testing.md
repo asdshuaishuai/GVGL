@@ -57,6 +57,22 @@ python3 client/gvgl_query.py --socket /tmp/gvgl-test.sock subscribe --pull
 # 6. gvglui 审查台：点击桌面画布实体 → 指令面板输入"点击 登录 按钮" → 评分 → 执行
 ```
 
+## 负载 / 健壮性检查
+
+单测从不同时开超过个位数连接——守护进程曾经**带着全绿的测试**上线了一个可用性
+缺陷：推送循环阻塞在处理请求的同一个并发队列上，63 个长连接就把整个守护进程
+静默饿死（不报错、不退出、只是再也不响应）。这类问题只能靠压测发现。
+
+```bash
+.build/debug/gvgl --socket /tmp/gvgl-load.sock &
+python3 scripts/load_check.py --socket /tmp/gvgl-load.sock
+```
+
+覆盖：基线延迟 / N 并发订阅不拖垮服务 / 超限显式拒绝 / 槽位归还 /
+连接churn 后 fd 与线程不泄漏 / 半截请求不卡死。退出码 0 = 全过。
+
+改动 socket 层（连接、订阅、线程模型）后必须跑这一项。
+
 ## 已知曾修复的问题（回归参考）
 
 | 问题 | 修复 |
