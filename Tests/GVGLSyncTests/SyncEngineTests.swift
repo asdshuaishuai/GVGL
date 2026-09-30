@@ -325,6 +325,47 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertTrue(published.contains(engine.screen))
     }
 
+    // MARK: - Window-owner discovery (non-application processes)
+
+    /// A process that owns a real on-screen window but is not an application
+    /// as far as NSWorkspace is concerned — an `osascript` modal being the case
+    /// that motivated this. It must be captured like any other app, and dropped
+    /// again once its window closes instead of lingering in the model.
+    func testDiscoversNonApplicationWindowOwnerAndReleasesIt() {
+        final class MockWindowProbe: CGWindowProviding, @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored: [Int32] = []
+            var owners: [Int32] {
+                get { lock.lock(); defer { lock.unlock() }; return stored }
+                set { lock.lock(); stored = newValue; lock.unlock() }
+            }
+            func onScreenWindows(pid: Int32) -> [CGWindowInfo] { [] }
+            func discoverWindowOwnerPIDs() -> [Int32] { owners }
+        }
+
+        let model = DesktopModel()
+        let capturer = MockCapturer()
+        let probe = MockWindowProbe()
+        let engine = SyncEngine(model: model, capturer: capturer, screen: screen,
+                                debounceInterval: 0.02, reconciliationInterval: 0.2,
+                                windowProbe: probe)
+        capturer.makeNodes = windowNode
+        engine.start()
+        defer { engine.stop() }
+
+        probe.owners = [4242]
+        XCTAssertTrue(waitUntil { model.appKeys.contains("pid:4242") },
+                      "a window-owning process the daemon does not know as an app was never discovered")
+        XCTAssertTrue(
+            waitUntil { model.frame(screen: self.screen).allEntities.contains { $0.appID == "pid:4242" } },
+            "discovered process produced no entities")
+
+        // The dialog closes.
+        probe.owners = []
+        XCTAssertTrue(waitUntil { !model.appKeys.contains("pid:4242") },
+                      "a vanished process lingered in the model")
+    }
+
     // MARK: - Reconciler batch selection (V3 speedup)
 
     private func appInfos(_ count: Int) -> [AppInfo] {

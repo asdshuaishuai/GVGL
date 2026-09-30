@@ -77,6 +77,11 @@ public final class SyncEngine: @unchecked Sendable {
 
     private let lock = NSLock()
     private var infos: [String: AppInfo] = [:]
+    /// Processes found by CGWindow discovery rather than NSWorkspace, and the
+    /// window count that justified keeping them. Re-evaluated every reconcile
+    /// tick so a dialog that closes is dropped again instead of lingering.
+    private var discoveredPIDs: [Int32: Int] = [:]
+    private let windowProbe: CGWindowProviding
     private var lastCaptured: [String: Date] = [:]
     private var cooldownUntil: [String: Date] = [:]
     private var dirty = Set<String>()
@@ -97,13 +102,15 @@ public final class SyncEngine: @unchecked Sendable {
         capturer: AppCapturing,
         screen: ScreenInfo,
         debounceInterval: TimeInterval = 0.05,
-        reconciliationInterval: TimeInterval = 3.0
+        reconciliationInterval: TimeInterval = 3.0,
+        windowProbe: CGWindowProviding = CGWindowProbe()
     ) {
         self.model = model
         self.capturer = capturer
         self.screenStorage = screen
         self.debounceInterval = debounceInterval
         self.reconciliationInterval = reconciliationInterval
+        self.windowProbe = windowProbe
     }
 
     // MARK: - Lifecycle
@@ -322,6 +329,7 @@ public final class SyncEngine: @unchecked Sendable {
 
     private func reconcile() {
         refreshScreen()
+        discoverWindowOwners()
         let now = Date()
         lock.lock()
         let due = infos.values.filter { info in
@@ -343,6 +351,57 @@ public final class SyncEngine: @unchecked Sendable {
         for info in batch {
             syncApp(info: info)
         }
+    }
+
+    /// Picks up processes that own a real on-screen window but are not
+    /// applications as far as NSWorkspace is concerned — `osascript` dialogs
+    /// above all. Without this the daemon is blind to modal dialogs, and an
+    /// agent asking for a button inside one gets confidently wrong answers.
+    ///
+    /// Runs every reconcile tick: CGWindowList is a cheap local call with no
+    /// target-app IPC (the same reason it is used for z-order ranking).
+    private func discoverWindowOwners() {
+        let live = Set(windowProbe.discoverWindowOwnerPIDs()).subtracting([getpid()])
+        let known = knownPIDs()
+
+        for pid in live.subtracting(known) {
+            monitorDiscovered(pid: pid)
+        }
+        // Drop discoveries whose windows are gone, so short-lived dialog
+        // processes do not accumulate in the model forever. A process that
+        // gained a real NSWorkspace identity in the meantime is left alone —
+        // WorkspaceTracker owns its lifetime.
+        for pid in discoveredPIDs.keys where !live.contains(pid) {
+            unmonitorDiscovered(pid: pid)
+        }
+    }
+
+    private func knownPIDs() -> Set<Int32> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(infos.values.map(\.pid))
+    }
+
+    private func monitorDiscovered(pid: Int32) {
+        let appKey = "pid:\(pid)"
+        lock.lock()
+        guard infos[appKey] == nil else { lock.unlock(); return }
+        discoveredPIDs[pid] = 0
+        lock.unlock()
+
+        // No bundle id: CGWindowList knows the process owns a window but not
+        // what it is called. NSRunningApplication still resolves a localized
+        // name for many of these; fall back to the pid so the frame and agent
+        // output stay identifiable either way.
+        let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "pid:\(pid)"
+        monitor(info: AppInfo(appKey: appKey, pid: pid, bundleID: nil, name: name))
+    }
+
+    private func unmonitorDiscovered(pid: Int32) {
+        lock.lock()
+        discoveredPIDs.removeValue(forKey: pid)
+        lock.unlock()
+        unmonitor(pid: pid)
     }
 
     /// Staleness-ordered batch selection: least-recently-captured apps first

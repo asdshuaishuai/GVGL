@@ -191,6 +191,17 @@ NSWorkspace：启停跟踪 + didActivate → 帧 frontmostApp（V3）
 CGDisplayRegisterReconfigurationCallback：显示器插拔/改分辨率
   → 立即刷新屏幕几何 + 全部 App 重捕（V3，不再等校准 tick）
 
+进程发现（两条互补来源，缺一不可）：
+  · NSWorkspace —— 只上报**带 App bundle 的应用**。
+  · CGWindowList —— 枚举拥有可点击屏幕窗口（layer 0~20）的进程。
+    标准 `osascript -e 'display dialog …'` 模态对话框就在这一类里：
+    它没有 bundle，NSWorkspace 永远不报，daemon 因此完全看不见它，
+    Agent 问"登录按钮在哪"只能拿到不相干窗口的自信错误答案
+    （实测：修复前 ax_weak 且候选全是菜单栏条目）。
+  窗口消失即自动摘除，短命对话框进程不会在模型里堆积。
+  （注意：对话框在 layer 8，不是 layer 0——只按 layer 0 过滤恰好会漏掉
+  最该抓的那一类。）
+
 Reconciler（默认 2~3s；V3 自适应批次：staleness 最旧优先，
   目标 15s 内扫完全部监视 App，冷却中 App 不占批次）
   └─ 兜底：AX 通知是 best-effort → 周期校准保证最终一致

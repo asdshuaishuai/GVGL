@@ -82,7 +82,10 @@ final class CGWindowCrossCheckTests: XCTestCase {
 
     private final class MockCGProvider: CGWindowProviding, @unchecked Sendable {
         var windows: [CGWindowInfo] = []
+        /// Pids reported as owning clickable on-screen windows.
+        var discoverable: [Int32] = []
         func onScreenWindows(pid: Int32) -> [CGWindowInfo] { windows }
+        func discoverWindowOwnerPIDs() -> [Int32] { discoverable }
     }
 
     private func appSnapshot(pid: Int32, windows: [CGWindowInfo], makeNodes: @escaping () -> [AXNode]) -> AXAppSnapshot {
