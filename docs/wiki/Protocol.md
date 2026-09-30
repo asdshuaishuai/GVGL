@@ -44,17 +44,28 @@ agent 的首次拉取（KB 级）：先看"哪块屏哪个象限有哪些窗口"
 ```
 无变化: {"result":{"event":"no_change","version":123}}
 有变化: {"result":{"event":"changed","version":N,
-                    "changed_apps":[...],"frame":{...}}}
+                    "changed_apps":[...],"requires_full_refresh":false,"frame":{...}}}
 ```
+
+`no_change` 仅在游标**恰好等于**当前版本时返回。`requires_full_refresh`（V5.1）：
+`changed_apps` 无法覆盖被跳过的全部变更时为 `true`——游标早于保留的变更日志
+（512 条环形缓冲溢出），或游标来自上一代守护进程（版本计数器从 0 重启）而领先于
+当前模型。此时 `frame` 仍是**完整快照**，客户端应整体替换本地视图，而不是按
+`changed_apps` 做增量打补丁。
 
 ### subscribe 长连接推送
 
 ```
-{"result":{"event":"subscribed","version":N}}
+{"result":{"event":"subscribed","version":N,"requires_full_refresh":false}}
 之后每 version 变化推送一行：
-{"event":"frame","version":N,"changed_apps":[...],"changed_regions":["d1q2",...]}
+{"event":"frame","version":N,"changed_apps":[...],"changed_regions":["d1q2",...],
+ "requires_full_refresh":false}
 静默期每 60s 一行：{"event":"ping","version":N}
 ```
+
+订阅的确认版本与推送游标取自**同一次原子读**：两者不一致会让客户端以为自己已在
+版本 N，而推送循环却从 N-1 重放（重复）或停在一个早已越过的版本上（永久静默）。
+领先于当前模型的游标会被夹到当前版本——否则该游标永远等不到唤醒，客户端静默卡死。
 
 `changed_regions`（V5.1）：本次变更触及的象限桶 `d<displayID><region>`（如 `d1q2`；
 无 displayID 记 `d0`；frontmost 变化记 `sys`）——新增/变更实体按新位置入桶，移除按旧位置。

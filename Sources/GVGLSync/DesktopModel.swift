@@ -4,20 +4,48 @@ import GVGLCore
 /// In-memory resident virtual desktop model. Frames are read-only materialized
 /// views of this model, never captured on demand.
 public final class DesktopModel: @unchecked Sendable {
-    private let lock = NSLock()
-    private let versionCond = NSCondition()
+    private let lock = NSCondition()
     private var apps: [String: AppState] = [:]
     /// Monotonic version; bumped on every model mutation.
-    public private(set) var version: UInt64 = 0
+    private var versionStorage: UInt64 = 0
+    public var version: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return versionStorage
+    }
     /// Grid resolution for the aggregated frame index (V2-1, default 4×4;
     /// 0 = linear-scan mode).
-    public var gridSize: Int = 0
+    private var gridSizeStorage: Int = 0
+    public var gridSize: Int {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return gridSizeStorage
+        }
+        set {
+            lock.lock()
+            gridSizeStorage = newValue
+            lock.unlock()
+        }
+    }
     /// V5.1 quadrant-label hysteresis band (display-space fraction). An
     /// entity whose display-space center stays within this distance of a
     /// quadrant/9-grid boundary KEEPS its previous label across captures, so
     /// a window resting on a label edge doesn't flip q1↔q2 on every minor
     /// jitter. Rects stay exact — only the labels are sticky. 0 disables.
-    public var regionHysteresis: Double = 0.02
+    private var regionHysteresisStorage: Double = 0.02
+    public var regionHysteresis: Double {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return regionHysteresisStorage
+        }
+        set {
+            lock.lock()
+            regionHysteresisStorage = newValue
+            lock.unlock()
+        }
+    }
     /// (version, appKey, regionBuckets) change log; keeps track of what
     /// changed so clients can do incremental pulls and region-masked
     /// subscriptions. Capped ring; appKey "system" = structural change.
@@ -36,6 +64,7 @@ public final class DesktopModel: @unchecked Sendable {
         var filterApp: String?
         var screen: ScreenInfo
         var depth: Int?
+        var gridSize: Int
     }
     private var materialized: (key: MaterializedKey, frame: GVGLFrame)?
 
@@ -83,7 +112,7 @@ public final class DesktopModel: @unchecked Sendable {
             finalOutput = PipelineOutput(
                 entities: deduped,
                 relations: output.relations,
-                index: SpatialIndex.build(from: deduped, gridSize: gridSize),
+                index: SpatialIndex.build(from: deduped, gridSize: gridSizeStorage),
                 cgWindowCount: output.cgWindowCount,
                 axWindowCount: output.axWindowCount,
                 missingWindowTitles: output.missingWindowTitles
@@ -99,7 +128,7 @@ public final class DesktopModel: @unchecked Sendable {
             finalOutput = PipelineOutput(
                 entities: stabilized,
                 relations: finalOutput.relations,
-                index: SpatialIndex.build(from: stabilized, gridSize: gridSize),
+                index: SpatialIndex.build(from: stabilized, gridSize: gridSizeStorage),
                 cgWindowCount: finalOutput.cgWindowCount,
                 axWindowCount: finalOutput.axWindowCount,
                 missingWindowTitles: finalOutput.missingWindowTitles
@@ -145,14 +174,12 @@ public final class DesktopModel: @unchecked Sendable {
 
     /// Must be called with `lock` held.
     private func bumpVersionLocked(_ appKey: String, regions: Set<String> = []) {
-        version &+= 1
-        changeLog.append(ChangeEntry(version: version, appKey: appKey, regions: regions))
+        versionStorage &+= 1
+        changeLog.append(ChangeEntry(version: versionStorage, appKey: appKey, regions: regions))
         if changeLog.count > changeLogCapacity {
             changeLog.removeFirst(changeLog.count - changeLogCapacity)
         }
-        versionCond.lock()
-        versionCond.broadcast()
-        versionCond.unlock()
+        lock.broadcast()
     }
 
     public func meta(appKey: String) -> AppSnapshot? {
@@ -184,26 +211,72 @@ public final class DesktopModel: @unchecked Sendable {
     /// Blocks (up to `timeout`) until the model version exceeds `version`.
     /// Returns the new version, or nil on timeout.
     public func waitForVersion(after version: UInt64, timeout: TimeInterval) -> UInt64? {
-        versionCond.lock()
-        defer { versionCond.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         let deadline = Date().addingTimeInterval(timeout)
-        while self.version == version {
-            guard versionCond.wait(until: deadline) else { break }
+        while versionStorage == version {
+            guard lock.wait(until: deadline) else { break }
         }
-        let current = self.version
-        return current > version ? current : nil
+        return versionStorage > version ? versionStorage : nil
+    }
+
+    public struct ChangeResult {
+        public var version: UInt64
+        public var apps: [String]
+        public var regions: [String]
+        public var requiresFullRefresh: Bool
+
+        public init(version: UInt64, apps: [String], regions: [String], requiresFullRefresh: Bool) {
+            self.version = version
+            self.apps = apps
+            self.regions = regions
+            self.requiresFullRefresh = requiresFullRefresh
+        }
+    }
+
+    /// Returns a self-consistent change-log snapshot after `version`.
+    public func changes(after version: UInt64) -> ChangeResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return changesLocked(after: version)
+    }
+
+    /// Must be called with `lock` held.
+    private func changesLocked(after version: UInt64) -> ChangeResult {
+        // A cursor is only serviceable when every mutation after it is still
+        // in the log. Two ways that fails:
+        //  - it predates the oldest retained entry (high-churn overflow), and
+        //  - it is AHEAD of the model, which is not "no change" but a cursor
+        //    from a previous daemon incarnation (the version counter restarts
+        //    at 0), i.e. a client that is completely desynced. Serving that as
+        //    `no_change` would wedge the client in silence forever.
+        // `oldest >= 1` guards the subtraction: the counter wraps via `&+=`.
+        let expired: Bool
+        if let oldest = changeLog.first?.version, oldest >= 1 {
+            expired = version < oldest - 1
+        } else {
+            expired = false
+        }
+        let requiresFullRefresh = expired || version > versionStorage
+        var seenApps = Set<String>()
+        var regions = Set<String>()
+        let apps: [String] = changeLog.compactMap { entry in
+            guard entry.version > version else { return nil }
+            regions.formUnion(entry.regions)
+            return seenApps.insert(entry.appKey).inserted ? entry.appKey : nil
+        }
+        return ChangeResult(
+            version: versionStorage,
+            apps: apps,
+            regions: regions.sorted(),
+            requiresFullRefresh: requiresFullRefresh
+        )
     }
 
     /// App keys (deduped, in change order) whose data changed strictly after
     /// `version`.
     public func changedApps(after version: UInt64) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        var seen = Set<String>()
-        return changeLog.compactMap { entry in
-            guard entry.version > version else { return nil }
-            return seen.insert(entry.appKey).inserted ? entry.appKey : nil
-        }
+        changes(after: version).apps
     }
 
     /// Region buckets ("d<displayID>q<region>", e.g. "d1q2"; "sys" for
@@ -211,23 +284,22 @@ public final class DesktopModel: @unchecked Sendable {
     /// Deduped, sorted — the union an agent needs when it masked a
     /// subscription to specific quadrants.
     public func changedRegions(after version: UInt64) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        var seen = Set<String>()
-        for entry in changeLog where entry.version > version {
-            seen.formUnion(entry.regions)
-        }
-        return seen.sorted()
+        changes(after: version).regions
     }
 
     public struct FrameResult {
         public var frame: GVGLFrame
         /// Apps changed since `since` (empty when `since` is nil).
         public var changedApps: [String]
+        /// True when the requested cursor predates the retained change log.
+        /// The frame is complete, but `changedApps` cannot describe all skipped
+        /// mutations and callers must treat it as a full refresh.
+        public var requiresFullRefresh: Bool
 
-        public init(frame: GVGLFrame, changedApps: [String]) {
+        public init(frame: GVGLFrame, changedApps: [String], requiresFullRefresh: Bool = false) {
             self.frame = frame
             self.changedApps = changedApps
+            self.requiresFullRefresh = requiresFullRefresh
         }
     }
 
@@ -235,9 +307,18 @@ public final class DesktopModel: @unchecked Sendable {
     /// With `since` set, also reports which apps changed after that version.
     /// `depth` limits the scene-tree levels below each app root (V4).
     public func frameResult(screen: ScreenInfo, filterApp: String? = nil, since: UInt64? = nil, depth: Int? = nil) -> FrameResult {
-        let frame = frame(screen: screen, filterApp: filterApp, depth: depth)
-        let changed = since.map { changedApps(after: $0) } ?? []
-        return FrameResult(frame: frame, changedApps: changed)
+        lock.lock()
+        defer { lock.unlock() }
+        let frame = materializeFrameLocked(screen: screen, filterApp: filterApp, depth: depth)
+        guard let since else {
+            return FrameResult(frame: frame, changedApps: [])
+        }
+        let changes = changesLocked(after: since)
+        return FrameResult(
+            frame: frame,
+            changedApps: changes.apps,
+            requiresFullRefresh: changes.requiresFullRefresh
+        )
     }
 
     /// Materializes a frame from the current model. O(entities) — no AX calls.
@@ -251,8 +332,18 @@ public final class DesktopModel: @unchecked Sendable {
     public func frame(screen: ScreenInfo, filterApp: String? = nil, depth: Int? = nil) -> GVGLFrame {
         lock.lock()
         defer { lock.unlock() }
+        return materializeFrameLocked(screen: screen, filterApp: filterApp, depth: depth)
+    }
 
-        let key = MaterializedKey(version: version, filterApp: filterApp, screen: screen, depth: depth)
+    /// Must be called with `lock` held.
+    private func materializeFrameLocked(screen: ScreenInfo, filterApp: String?, depth: Int?) -> GVGLFrame {
+        let key = MaterializedKey(
+            version: versionStorage,
+            filterApp: filterApp,
+            screen: screen,
+            depth: depth,
+            gridSize: gridSizeStorage
+        )
         if let cached = materialized, cached.key == key {
             return cached.frame
         }
@@ -285,7 +376,7 @@ public final class DesktopModel: @unchecked Sendable {
             ))
         }
         let flat = scene.flatMap { SceneTree.flatten($0.children) }
-        let index = GridIndexBuilder(gridSize: gridSize).build(from: flat)
+        let index = GridIndexBuilder(gridSize: gridSizeStorage).build(from: flat)
 
         let status: FrameStatus
         if states.isEmpty {
@@ -303,7 +394,7 @@ public final class DesktopModel: @unchecked Sendable {
         let now = Date()
         let frame = GVGLFrame(
             frameID: UUID().uuidString,
-            version: version,
+            version: versionStorage,
             createdAt: now,
             syncedAt: now,
             screen: screen,
@@ -350,9 +441,9 @@ public final class DesktopModel: @unchecked Sendable {
     /// adjusted (adjustments require an index rebuild because byRegion keys
     /// on geometry.region).
     private func applyRegionHysteresis(to entities: [Entity], previous: [Entity]) -> ([Entity], Bool) {
-        guard regionHysteresis > 0, !previous.isEmpty, !entities.isEmpty else { return (entities, false) }
+        guard regionHysteresisStorage > 0, !previous.isEmpty, !entities.isEmpty else { return (entities, false) }
         let oldByID = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let band = regionHysteresis
+        let band = regionHysteresisStorage
         var adjusted = false
         let result = entities.map { entity -> Entity in
             guard let old = oldByID[entity.id],

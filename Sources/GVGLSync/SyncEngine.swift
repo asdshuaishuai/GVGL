@@ -44,7 +44,12 @@ extension Snapshotter: AppCapturing {}
 /// with periodic full re-capture (Reconciler) as the eventual-consistency backstop.
 public final class SyncEngine: @unchecked Sendable {
     public let model: DesktopModel
-    public private(set) var screen: ScreenInfo
+    private var screenStorage: ScreenInfo
+    public var screen: ScreenInfo {
+        lock.lock()
+        defer { lock.unlock() }
+        return screenStorage
+    }
     public var debounceInterval: TimeInterval
     public var reconciliationInterval: TimeInterval
     /// Min gap between two captures of the same app (dirty-storm throttle).
@@ -96,7 +101,7 @@ public final class SyncEngine: @unchecked Sendable {
     ) {
         self.model = model
         self.capturer = capturer
-        self.screen = screen
+        self.screenStorage = screen
         self.debounceInterval = debounceInterval
         self.reconciliationInterval = reconciliationInterval
     }
@@ -237,7 +242,7 @@ public final class SyncEngine: @unchecked Sendable {
             return
         }
         if let rect {
-            let norm = CoordinateComputer(screen: screen).screenNorm(rect)
+            let norm = CoordinateComputer(screen: screenStorage).screenNorm(rect)
             var rects = pendingWindowRects[key] ?? []
             if !rects.contains(where: { ($0.centerX - norm.centerX).magnitude < 0.01
                 && ($0.centerY - norm.centerY).magnitude < 0.01 }) {
@@ -295,9 +300,11 @@ public final class SyncEngine: @unchecked Sendable {
     /// Re-reads the screen geometry via `screenReader` (called each reconcile
     /// tick so display changes don't stale normalization).
     public func refreshScreen() {
-        if let reader = screenReader {
-            screen = reader()
-        }
+        guard let reader = screenReader else { return }
+        let refreshed = reader()
+        lock.lock()
+        screenStorage = refreshed
+        lock.unlock()
     }
 
     /// Display reconfiguration hook (M3): the normalization base changed, so

@@ -163,7 +163,7 @@ public final class SocketServer: @unchecked Sendable {
         // wake-up, so iteration counting would never reach the threshold.
         var maskedVersions: UInt64 = 0
         while true {
-            guard let newVersion = model.waitForVersion(after: last, timeout: 5) else {
+            guard model.waitForVersion(after: last, timeout: 5) != nil else {
                 // No change within the window. Ping occasionally so a dead
                 // client on a quiet desktop is detected and reaped.
                 quietTimeouts += 1
@@ -174,11 +174,11 @@ public final class SocketServer: @unchecked Sendable {
                 continue
             }
             quietTimeouts = 0
-            let consumed = newVersion - last
-            let apps = model.changedApps(after: last)
-            let regions = model.changedRegions(after: last)
-            last = newVersion
-            if let mask, mask.isDisjoint(with: regions) {
+            let changes = model.changes(after: last)
+            let currentVersion = changes.version
+            let consumed = currentVersion - last
+            last = currentVersion
+            if let mask, mask.isDisjoint(with: changes.regions) {
                 maskedVersions += consumed
                 if maskedVersions >= 12 {
                     maskedVersions = 0
@@ -188,7 +188,13 @@ public final class SocketServer: @unchecked Sendable {
                 continue // masked out: advance the cursor, stay silent
             }
             maskedVersions = 0
-            let event = PushEvent(event: "frame", version: newVersion, changed_apps: apps, changed_regions: regions)
+            let event = PushEvent(
+                event: "frame",
+                version: currentVersion,
+                changed_apps: changes.apps,
+                changed_regions: changes.regions,
+                requires_full_refresh: changes.requiresFullRefresh
+            )
             guard let payload = try? JSONEncoder.gvgl.encode(event),
                   let line = String(data: payload, encoding: .utf8) else { return }
             guard Self.writeLine(fd, line + "\n") else { return }
@@ -225,21 +231,25 @@ public final class SocketServer: @unchecked Sendable {
         var event: String
         var version: UInt64
         var changed_apps: [String]
+        var requires_full_refresh: Bool
         var frame: GVGLFrame
     }
 
     private struct SubscribedResult: Codable {
         var event: String
         var version: UInt64
+        /// True when the requested cursor was not the current version (stale
+        /// or from a previous daemon incarnation). The client holds a
+        /// desynced view and must re-pull rather than apply deltas.
+        var requires_full_refresh: Bool
     }
 
     private struct PushEvent: Codable {
         var event: String
         var version: UInt64
         var changed_apps: [String]
-        /// V5.1: region buckets touched by this change ("d<displayID>q<region>",
-        /// "sys" for frontmost); empty for structural-only bumps.
         var changed_regions: [String]
+        var requires_full_refresh: Bool
     }
 
     private func route(_ line: String) -> (String, Subscription?) {
@@ -262,7 +272,11 @@ public final class SocketServer: @unchecked Sendable {
             if let since = request.since {
                 // Incremental pull: report only what changed since `since`.
                 let result = model.frameResult(screen: engine.screen, filterApp: request.app, since: since, depth: depth)
-                if result.frame.version <= since {
+                // Only a genuinely up-to-date cursor is a no-op. An expired or
+                // future cursor must still deliver the (complete) frame with
+                // requires_full_refresh, otherwise the client stays stale
+                // forever believing it is up to date.
+                if result.frame.version == since, !result.requiresFullRefresh {
                     let text = """
                     {"result":{"event":"no_change","version":\(since)}}
                     """
@@ -272,6 +286,7 @@ public final class SocketServer: @unchecked Sendable {
                     event: "changed",
                     version: result.frame.version,
                     changed_apps: result.changedApps,
+                    requires_full_refresh: result.requiresFullRefresh,
                     frame: result.frame
                 )
                 guard let payload = try? JSONEncoder.gvgl.encode(["result": changed]),
@@ -288,8 +303,19 @@ public final class SocketServer: @unchecked Sendable {
             return (text, nil)
 
         case "subscribe":
-            let initial = request.since ?? model.version
-            let subscribed = SubscribedResult(event: "subscribed", version: model.version)
+            // One atomic read: the acked version and the push cursor must be
+            // the same number, otherwise the client believes it is current at
+            // version N while the loop replays from N-1 (duplicate) or sits
+            // waiting on a version that already passed (silence). A cursor from
+            // a dead daemon incarnation is clamped forward to now, so the
+            // client gets a fresh stream instead of never being woken.
+            let currentVersion = model.version
+            let initial = request.since.map { min($0, currentVersion) } ?? currentVersion
+            let subscribed = SubscribedResult(
+                event: "subscribed",
+                version: currentVersion,
+                requires_full_refresh: request.since.map { $0 != currentVersion } ?? false
+            )
             guard let payload = try? JSONEncoder.gvgl.encode(["result": subscribed]),
                   let text = String(data: payload, encoding: .utf8) else {
                 return (Self.errorResponse("internal", "serialization failed"), nil)

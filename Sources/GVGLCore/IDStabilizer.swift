@@ -154,7 +154,7 @@ public extension PipelineOutput {
         return PipelineOutput(
             entities: remappedEntities,
             relations: remappedRelations,
-            index: SpatialIndex.build(from: remappedEntities),
+            index: SpatialIndex.build(from: remappedEntities, gridSize: index.gridSize),
             // CG cross-check stats survive re-keying (previously dropped).
             cgWindowCount: cgWindowCount,
             axWindowCount: axWindowCount,

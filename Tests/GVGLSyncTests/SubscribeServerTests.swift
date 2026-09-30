@@ -87,9 +87,21 @@ final class SubscribeServerTests: XCTestCase {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
+    /// A cursor exactly at the current version is the only true no-op.
     func testGetFrameSinceNoChange() {
         let fd = clientSocket()
         sendLine(fd, #"{"method":"get_frame","since":999}"#)
+        let line = readLine(fd)
+        close(fd)
+        // Model is empty (version 0) and the cursor is ahead of it — a
+        // desynced client, not an idle one. It must be told to refresh.
+        XCTAssertTrue(line.contains(#""requires_full_refresh":true"#), "got: \(line)")
+    }
+
+    func testGetFrameSinceCurrentVersionIsNoChange() {
+        let current = model.version
+        let fd = clientSocket()
+        sendLine(fd, #"{"method":"get_frame","since":\#(current)}"#)
         let line = readLine(fd)
         close(fd)
         XCTAssertTrue(line.contains(#""event":"no_change""#), "got: \(line)")
@@ -138,6 +150,25 @@ final class SubscribeServerTests: XCTestCase {
         close(fd)
         XCTAssertTrue(line.contains(#""event":"changed""#), "got: \(line)")
         XCTAssertTrue(line.contains(#""changed_apps":["pid:2"]"#), "got: \(line)")
+        XCTAssertTrue(line.contains(#""requires_full_refresh":false"#), "got: \(line)")
+    }
+
+    func testGetFrameSinceExpiredCursorRequestsFullRefresh() {
+        for i in 0...512 {
+            let appKey = "pid:\(i)"
+            model.upsert(
+                appKey: appKey,
+                output: PipelineOutput(entities: [makeEntity("e\(i)")], relations: [], index: SpatialIndex()),
+                meta: meta(appKey, Int32(i))
+            )
+        }
+
+        let fd = clientSocket()
+        sendLine(fd, #"{"method":"get_frame","since":0}"#)
+        let line = readLine(fd)
+        close(fd)
+        XCTAssertTrue(line.contains(#""event":"changed""#), "got: \(line)")
+        XCTAssertTrue(line.contains(#""requires_full_refresh":true"#), "got: \(line)")
     }
 
     func testSubscribePushesVersionEvents() {
@@ -172,6 +203,45 @@ final class SubscribeServerTests: XCTestCase {
         let event = readLine(fd)
         XCTAssertTrue(event.contains("pid:2"), "got: \(event)")
         XCTAssertFalse(event.contains("pid:1"), "pre-since changes must not be reported: \(event)")
+        close(fd)
+    }
+
+    /// A cursor from a dead daemon incarnation (ahead of the model) must not
+    /// wedge the push loop: it is clamped forward to now, flagged as needing
+    /// a full refresh, and the next bump is still delivered.
+    func testSubscribeWithFutureCursorIsClampedAndFlagged() {
+        let model = self.model
+        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
+        let current = model.version
+
+        let fd = clientSocket()
+        sendLine(fd, #"{"method":"subscribe","since":\#(current + 5000)}"#)
+        let ack = readLine(fd)
+        XCTAssertTrue(ack.contains(#""event":"subscribed""#), "got: \(ack)")
+        XCTAssertTrue(ack.contains(#""version":\#(current)"#), "acked version must be current: \(ack)")
+        XCTAssertTrue(ack.contains(#""requires_full_refresh":true"#), "got: \(ack)")
+
+        // Without clamping this bump would never wake the loop (the cursor is
+        // already ahead of the new version), so the client would hang silent.
+        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")], relations: [], index: SpatialIndex()), meta: meta("pid:2", 2))
+        let event = readLine(fd)
+        XCTAssertTrue(event.contains(#""event":"frame"#), "got: \(event)")
+        XCTAssertTrue(event.contains("pid:2"), "got: \(event)")
+        close(fd)
+    }
+
+    /// The acked version and the push cursor are one atomic read, so a client
+    /// that resumes from the acked version never misses a bump.
+    func testSubscribeAckVersionIsCurrentAndNoRefreshWhenInSync() {
+        let model = self.model
+        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
+        let current = model.version
+
+        let fd = clientSocket()
+        sendLine(fd, #"{"method":"subscribe","since":\#(current)}"#)
+        let ack = readLine(fd)
+        XCTAssertTrue(ack.contains(#""version":\#(current)"#), "got: \(ack)")
+        XCTAssertTrue(ack.contains(#""requires_full_refresh":false"#), "got: \(ack)")
         close(fd)
     }
 

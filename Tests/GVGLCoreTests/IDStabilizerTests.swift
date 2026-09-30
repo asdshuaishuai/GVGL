@@ -122,6 +122,19 @@ final class IDStabilizerTests: XCTestCase {
         XCTAssertEqual(remapped.missingWindowTitles, ["孤窗"])
     }
 
+    func testRemappedPreservesSpatialIndexGridSize() {
+        let original = entity("pid:1:0-4", title: "登录")
+        let output = PipelineOutput(
+            entities: [original],
+            relations: [],
+            index: SpatialIndex.build(from: [original], gridSize: 2)
+        )
+
+        let remapped = output.remapped(by: ["pid:1:0-4": "pid:1:0-2"])
+        XCTAssertEqual(remapped.index.gridSize, 2)
+        XCTAssertEqual(remapped.index.byRole["AXButton"], ["pid:1:0-2"])
+    }
+
     /// A re-keyed entity must never steal the id of an entity that kept its
     /// own: stabilize's order-dependent matching could otherwise leave two
     /// entities sharing one id after remapping. The kept (stable) entity wins;

@@ -128,6 +128,38 @@ final class DesktopModelTests: XCTestCase {
         let r = model.frameResult(screen: screen, since: v1)
         XCTAssertEqual(r.frame.version, model.version)
         XCTAssertEqual(r.changedApps, ["pid:2"])
+        XCTAssertFalse(r.requiresFullRefresh)
+    }
+
+    func testFrameResultMarksExpiredChangeLogCursorForFullRefresh() {
+        let model = DesktopModel()
+        for i in 0...512 {
+            let appKey = "pid:\(i)"
+            model.upsert(appKey: appKey, output: output("e\(i)"), meta: meta(appKey, Int32(i), "A"))
+        }
+
+        let expired = model.frameResult(screen: screen, since: 0)
+        XCTAssertTrue(expired.requiresFullRefresh)
+        XCTAssertEqual(expired.frame.version, model.version)
+
+        let firstRetainedCursor = model.version - 512
+        let complete = model.frameResult(screen: screen, since: firstRetainedCursor)
+        XCTAssertFalse(complete.requiresFullRefresh)
+        XCTAssertEqual(complete.changedApps.count, 512)
+    }
+
+    /// A cursor ahead of the model is not "no change" — it is a client holding
+    /// a desynced view (e.g. a version from a previous daemon incarnation,
+    /// where the counter restarts at 0). Reporting a quiet no-op would leave
+    /// that client permanently stale with no signal that anything is wrong.
+    func testFrameResultMarksFutureCursorForFullRefresh() {
+        let model = DesktopModel()
+        model.upsert(appKey: "pid:1", output: output("e1"), meta: meta("pid:1", 1, "A"))
+
+        let future = model.frameResult(screen: screen, since: model.version + 1000)
+        XCTAssertTrue(future.requiresFullRefresh)
+        XCTAssertEqual(future.frame.version, model.version)
+        XCTAssertTrue(future.changedApps.isEmpty)
     }
 
     // MARK: - V3 frontmost app

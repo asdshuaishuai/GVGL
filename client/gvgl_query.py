@@ -610,6 +610,12 @@ def cmd_subscribe(args):
                 apps = event.get("changed_apps", [])
                 regions = event.get("changed_regions", [])
                 line = f"event=frame version={version} changed_apps={apps} changed_regions={regions}"
+                if event.get("requires_full_refresh"):
+                    # The cursor predates the retained change log (or came from
+                    # a previous daemon incarnation): `changed_apps` cannot
+                    # describe every skipped mutation, so treat the next frame
+                    # as a full snapshot instead of an incremental patch.
+                    line += " requires_full_refresh"
                 if args.pull:
                     try:
                         result = client.get_frame_since(since=version)

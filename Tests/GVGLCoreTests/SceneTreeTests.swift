@@ -130,4 +130,20 @@ final class SceneTreeTests: XCTestCase {
         XCTAssertEqual(roots.map(\.id).sorted(), ["pid:1:0", "pid:1:oops"])
         XCTAssertEqual(SceneTree.flatten(roots).count, 3)
     }
+
+    func testParentCycleDegradesAllCycleMembersToRoots() {
+        let entities = [
+            entity("pid:1:0", role: "AXWindow"),
+            entity("pid:1:cycle-a", parent: "pid:1:cycle-b"),
+            entity("pid:1:cycle-b", parent: "pid:1:cycle-a"),
+            entity("pid:1:cycle-child", parent: "pid:1:cycle-a"),
+        ]
+
+        let roots = SceneTree.build(entities: entities)
+        let flat = SceneTree.flatten(roots)
+        XCTAssertEqual(Set(flat.map(\.id)), Set(entities.map(\.id)))
+        XCTAssertEqual(flat.count, entities.count)
+        XCTAssertEqual(roots.filter { $0.id.hasPrefix("pid:1:cycle-") }.map(\.entityParentID), [nil, nil])
+        XCTAssertEqual(roots.first { $0.id == "pid:1:cycle-a" }?.children?.map(\.id), ["pid:1:cycle-child"])
+    }
 }

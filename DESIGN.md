@@ -275,11 +275,14 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`），NDJSON 一行一答；`subs
 → {"method":"get_frame","since":123}           ← 增量拉取：
                                                  {"result":{"event":"no_change","version":123}}
                                                  或 {"result":{"event":"changed","version":N,
-                                                               "changed_apps":[...],"frame":{...}}}
+                                                               "changed_apps":[...],
+                                                               "requires_full_refresh":false,"frame":{...}}}
 → {"method":"subscribe","since":123}           ← 长连接推送：
-                                                 {"result":{"event":"subscribed","version":N}}
+                                                 {"result":{"event":"subscribed","version":N,
+                                                            "requires_full_refresh":false}}
                                                  之后每版本变化一行：
-                                                 {"event":"frame","version":N,"changed_apps":[...]}
+                                                 {"event":"frame","version":N,"changed_apps":[...],
+                                                  "requires_full_refresh":false}
                                                  静默期每 60s 一行 {"event":"ping",...}
 → {"method":"get_status"}                      ← {"result":{monitoredApps,version,permissionGranted,uptime,socket,frameStatus}}
 → 其他/坏 JSON                                 ← {"error":{"code":"invalid_method"|"invalid_request","message"}}
