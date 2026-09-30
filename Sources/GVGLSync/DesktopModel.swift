@@ -409,6 +409,7 @@ public final class DesktopModel: @unchecked Sendable {
                 capturedAt: state.meta.capturedAt,
                 entityCount: state.meta.entityCount,
                 cgWindowCount: state.meta.cgWindowCount,
+                actionProbeFailures: state.meta.actionProbeFailures,
                 axWindowCount: state.meta.axWindowCount,
                 missingWindowTitles: state.meta.missingWindowTitles,
                 children: roots

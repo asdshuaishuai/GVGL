@@ -6,12 +6,14 @@ public struct PipelineOutput: Hashable, Sendable {
     public var index: SpatialIndex
     /// V2-3 CGWindow cross-check stats (0/0/[] when no probe data).
     public var cgWindowCount: Int
+    /// AX action probes that errored during capture (see AXAppSnapshot).
+    public var actionProbeFailures: Int
     public var axWindowCount: Int
     public var missingWindowTitles: [String]
 
     public static let empty = PipelineOutput(
         entities: [], relations: [], index: SpatialIndex(),
-        cgWindowCount: 0, axWindowCount: 0, missingWindowTitles: []
+        cgWindowCount: 0, actionProbeFailures: 0, axWindowCount: 0, missingWindowTitles: []
     )
 
     public init(
@@ -19,6 +21,7 @@ public struct PipelineOutput: Hashable, Sendable {
         relations: [Relation],
         index: SpatialIndex,
         cgWindowCount: Int = 0,
+        actionProbeFailures: Int = 0,
         axWindowCount: Int = 0,
         missingWindowTitles: [String] = []
     ) {
@@ -26,6 +29,7 @@ public struct PipelineOutput: Hashable, Sendable {
         self.relations = relations
         self.index = index
         self.cgWindowCount = cgWindowCount
+        self.actionProbeFailures = actionProbeFailures
         self.axWindowCount = axWindowCount
         self.missingWindowTitles = missingWindowTitles
     }
@@ -182,6 +186,7 @@ public final class Pipeline: @unchecked Sendable {
             relations: relations,
             index: index,
             cgWindowCount: windowStats.cgCount,
+            actionProbeFailures: snapshot.actionProbeFailures,
             axWindowCount: windowStats.axCount,
             missingWindowTitles: windowStats.missing
         )

@@ -479,6 +479,7 @@ public final class SyncEngine: @unchecked Sendable {
             bundleID: info.bundleID, name: info.name,
             status: .warming, capturedAt: now, entityCount: 0,
             cgWindowCount: remapped.cgWindowCount > 0 ? remapped.cgWindowCount : nil,
+            actionProbeFailures: remapped.actionProbeFailures > 0 ? remapped.actionProbeFailures : nil,
             axWindowCount: remapped.axWindowCount > 0 ? remapped.axWindowCount : nil,
             missingWindowTitles: remapped.missingWindowTitles.isEmpty ? nil : remapped.missingWindowTitles
         )

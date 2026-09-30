@@ -530,6 +530,11 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
     public var entityCount: Int
     /// V2-3 CGWindow cross-check: on-screen CG window count seen by the probe.
     public var cgWindowCount: Int?
+    /// AX action probes that ERRORED during the last capture. Present only
+    /// when non-zero: it means `actions` in this app's subtree is incomplete
+    /// for an unknown reason, rather than the elements genuinely having no
+    /// actions. Zero-omitted keeps normal frames byte-identical.
+    public var actionProbeFailures: Int?
     /// V2-3: AX window entity count (may exceed CG count: AX sees all Spaces).
     public var axWindowCount: Int?
     /// V2-3: CG window titles with no matching AX window (weak-AX signal).
@@ -544,6 +549,7 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         capturedAt: Date?,
         entityCount: Int,
         cgWindowCount: Int? = nil,
+        actionProbeFailures: Int? = nil,
         axWindowCount: Int? = nil,
         missingWindowTitles: [String]? = nil
     ) {
@@ -555,13 +561,14 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         self.capturedAt = capturedAt
         self.entityCount = entityCount
         self.cgWindowCount = cgWindowCount
+        self.actionProbeFailures = actionProbeFailures
         self.axWindowCount = axWindowCount
         self.missingWindowTitles = missingWindowTitles
     }
 
     enum CodingKeys: String, CodingKey {
         case appKey, pid, bundleID, name, status, capturedAt, entityCount
-        case cgWindowCount, axWindowCount, missingWindowTitles
+        case cgWindowCount, axWindowCount, missingWindowTitles, actionProbeFailures
     }
 
     public init(from decoder: Decoder) throws {
@@ -574,6 +581,7 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         capturedAt = try c.decodeIfPresent(Date.self, forKey: .capturedAt)
         entityCount = try c.decode(Int.self, forKey: .entityCount)
         cgWindowCount = try c.decodeIfPresent(Int.self, forKey: .cgWindowCount)
+        actionProbeFailures = try c.decodeIfPresent(Int.self, forKey: .actionProbeFailures)
         axWindowCount = try c.decodeIfPresent(Int.self, forKey: .axWindowCount)
         missingWindowTitles = try c.decodeIfPresent([String].self, forKey: .missingWindowTitles)
     }
@@ -588,6 +596,7 @@ public struct AppSnapshot: Codable, Hashable, Sendable {
         try c.encodeIfPresent(capturedAt, forKey: .capturedAt)
         try c.encode(entityCount, forKey: .entityCount)
         try c.encodeIfPresent(cgWindowCount, forKey: .cgWindowCount)
+        try c.encodeIfPresent(actionProbeFailures, forKey: .actionProbeFailures)
         try c.encodeIfPresent(axWindowCount, forKey: .axWindowCount)
         try c.encodeIfPresent(missingWindowTitles, forKey: .missingWindowTitles)
     }
@@ -617,6 +626,11 @@ public struct SceneApp: Codable, Hashable, Sendable {
     public var entityCount: Int
     /// --cg-check diagnostics (nil when the probe's diagnostics are off).
     public var cgWindowCount: Int?
+    /// AX action probes that ERRORED during the last capture. Present only
+    /// when non-zero: it means `actions` in this app's subtree is incomplete
+    /// for an unknown reason, rather than the elements genuinely having no
+    /// actions. Zero is omitted so normal frames are unchanged.
+    public var actionProbeFailures: Int?
     public var axWindowCount: Int?
     public var missingWindowTitles: [String]?
     public var children: [Entity]
@@ -630,6 +644,7 @@ public struct SceneApp: Codable, Hashable, Sendable {
         capturedAt: Date?,
         entityCount: Int,
         cgWindowCount: Int? = nil,
+        actionProbeFailures: Int? = nil,
         axWindowCount: Int? = nil,
         missingWindowTitles: [String]? = nil,
         children: [Entity]
@@ -642,6 +657,7 @@ public struct SceneApp: Codable, Hashable, Sendable {
         self.capturedAt = capturedAt
         self.entityCount = entityCount
         self.cgWindowCount = cgWindowCount
+        self.actionProbeFailures = actionProbeFailures
         self.axWindowCount = axWindowCount
         self.missingWindowTitles = missingWindowTitles
         self.children = children
