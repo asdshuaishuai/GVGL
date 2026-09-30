@@ -77,11 +77,32 @@ private func parseArguments() {
         case "--print-socket":
             print(socketPath)
             exit(0)
+        case "--check-permission":
+            // Machine-readable accessibility-permission self-check. Exits
+            // 0 when granted, 3 when not, so install scripts and CI can act on
+            // it without scraping prose. TCC identity is per binary path (and
+            // per code signature), so a rebuild can silently lose it — which
+            // is exactly when a check like this earns its keep.
+            if AXIsProcessTrusted() {
+                print("granted")
+                exit(0)
+            }
+            let who = CommandLine.arguments.first ?? "gvgl"
+            print("denied")
+            FileHandle.standardError.write(Data("""
+            辅助功能权限未授予，桌面内容将全部报告 permission_denied。
+              系统设置 › 隐私与安全性 › 辅助功能 中启用：
+                \(who)
+              注意：授权绑定到**这个二进制路径**。swift build 重新编译后可能
+              需要重新授权。
+            """.utf8))
+            exit(3)
         case "--help", "-h":
             print("""
             gvgl — semi-sync virtual desktop daemon
             usage: gvgl [--socket PATH] [--reconcile SECONDS] [--only-apps com.a,com.b]
-                        [--index-grid N] [--cg-check] [--verbose] [--version] [--print-socket]
+                        [--index-grid N] [--cg-check] [--verbose] [--version]
+                        [--print-socket] [--check-permission]
             """)
             exit(0)
         default:

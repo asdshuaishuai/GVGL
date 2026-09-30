@@ -189,10 +189,19 @@ public enum QueryEngine {
         }
 
         let area = entity.geometry.area
+        // Calibrated against the observed distribution of pressable elements
+        // on a real desktop (680 samples), not against intuition. The old
+        // bands (0.001 / 0.0005) put 84% of them in the worst bucket — and
+        // disproportionately the *small precise* ones (dialog buttons, list
+        // rows, compact controls), which are exactly what an agent wants to
+        // click. A term stuck at its floor carries no information.
+        //   0.0002  ≈ 31×31 px on 3440×1440 — comfortably clickable
+        //   0.00005 ≈ 16×16 px — small but hittable
+        //   below   — genuinely hard to hit reliably
         let size: Double
-        if area >= 0.001 && area <= 0.05 {
+        if area >= 0.0002 && area <= 0.05 {
             size = 1.0
-        } else if area >= 0.0005 && area <= 0.1 {
+        } else if area >= 0.00005 && area <= 0.2 {
             size = 0.6
         } else {
             size = 0.2

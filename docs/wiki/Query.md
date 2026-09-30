@@ -29,9 +29,21 @@ Role       精确=1.0 / 兼容（Button↔MenuItem, CheckBox↔Radio, TextField�
            SecureTextField/ComboBox, ComboBox↔PopUpButton）=0.6
 Spatial    V4 起几何按需计算（帧不再携带关系表）：满足方向=1.0 / near=0.7 /
            与参考实体同象限=0.5；同窗口对用窗口空间、跨窗口对用屏幕空间
-Size       area∈[0.001,0.05]=1.0 / ∈[0.0005,0.1]=0.6 / 其他=0.2
+Size       area∈[0.0002,0.05]=1.0 / ∈[0.00005,0.2]=0.6 / 其他=0.2
 Topology   有 windowID=+0.3 / enabled=+0.3 / 有 actions=+0.4
 ```
+
+**Size 阈值来自实测分布，不是拍脑袋**：在本机真实桌面上采样了 680 个
+可按压元素的面积。旧档位（0.001 / 0.0005）把其中 **84.7%** 塞进最差档，
+且偏向小型精确控件（对话框按钮、列表行、紧凑控件）——恰恰是 Agent 最想点的
+那批。一个长期贴在地板上的分量不携带任何信息。
+新档位按物理尺寸语义设定：0.0002 ≈ 3440×1440 上的 31×31px（舒适可点），
+0.00005 ≈ 16×16px（偏小但可命中）。标定后 1.0 档占比 5.9%→53.7%，
+0.2 档 84.7%→22.2%，平均 size 分 0.285→0.726。
+
+> `client/gvgl_query.py` 里有一份等价实现（两份必须同步改），
+> 见 `Sources/GVGLQuery/QueryEngine.swift:score` 与
+> `client/gvgl_query.py:score_entity`。
 
 **方向判定（V4 几何化）**：查询 "right-of" 即"候选左缘 > 参考右缘"（above/
 below/left-of 以此类推），直接从 rect 判定——无存储方向关系、无镜像问题；

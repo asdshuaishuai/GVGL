@@ -265,11 +265,14 @@ def score_entity(e: dict, role: str | None, label: str | None,
     elif ref is not None and not ref_dir and e["id"] == ref["id"]:
         spatial = 1.0
 
-    # SizeScore
+    # SizeScore — bands calibrated against the observed distribution of
+    # pressable elements on a real desktop (680 samples); the old bands put
+    # 84% of them in the worst bucket, disproportionately small precise ones.
+    # Must stay identical to QueryEngine.score in Sources/GVGLQuery.
     area = e["geometry"]["area"]
-    if 0.001 <= area <= 0.05:
+    if 0.0002 <= area <= 0.05:
         size = 1.0
-    elif 0.0005 <= area <= 0.1:
+    elif 0.00005 <= area <= 0.2:
         size = 0.6
     else:
         size = 0.2

@@ -31,6 +31,15 @@ python3 client/gvgl_query.py watch --interval 0.5            # 轮询观察 vers
 | 3 | `status` 正常返回，但**辅助功能权限未授予**——stdout 仍是可解析的 JSON，同时 stderr 给出到"系统设置 › 隐私与安全性 › 辅助功能"的具体路径 |
 
 脚本可以据此区分"没查到"（1）与"根本没法查"（2、3）。
+
+想在查询之前就知道权限状态，用守护进程侧的自检命令（同一套退出码约定）：
+
+```bash
+gvgl --check-permission     # granted → 0；denied → 3 + stderr 指引
+```
+
+TCC 授权绑定到二进制路径 + 签名，`swift build` 重新编译后可能静默失效 ——
+详见 [Ops.md](Ops.md#自检gvgl---check-permission)。
 - `--json` 输出机器可读结果（含 `status`/`hits`/`best`/`elements`）。
 - socket 可用 `--socket PATH` 或环境变量 `GVGL_SOCKET` 指定。
 

@@ -30,14 +30,37 @@ swift build -c release
 - 守护进程启动时若未授权：自动打开系统设置辅助功能面板（§6.1 引导弹窗）。
 - 从 launchd 启动：权限归属 gvgl 二进制本体，需单独勾选。
 
+### 自检：`gvgl --check-permission`
+
+```bash
+gvgl --check-permission
+# granted → 退出码 0
+# denied  → 退出码 3，并在 stderr 打印授权指引
+```
+
+**为什么需要它**：TCC 授权绑定到**二进制路径 + 代码签名**。
+`swift build` 重新编译会换掉签名，授权可能静默失效 —— 此时守护进程
+启动完全正常，只是每一帧都返回 `permission_denied`，看起来像"桌面是空的"。
+这个命令就是为了把那种静默失败变成一个可判定的退出码。
+
+安装脚本会先确认当前二进制支持该 flag（用 `--help` 探测）：旧二进制会
+忽略未知参数、转而启动守护进程并把脚本挂死。
+
 ## launchd 常驻
 
 ```bash
 scripts/install-gvgl-launchagent.sh
 #   - RunAtLoad + KeepAlive，日志 ~/.gvgl/logs/
-#   - 安装后一次性：系统设置 → 辅助功能 → 启用 gvgl 二进制本体
+#   - 安装后实际执行 TCC 检查（不是只打印提醒），三分支：
+#       granted  → 打印状态，exit 0
+#       denied   → 醒目警告 + 授权指引 + 询问是否打开系统设置，exit 3
+#       unknown  → 二进制太旧无法自检，手动确认提示，exit 0
+#     设置 GVGL_NO_OPEN_SETTINGS=1 可跳过交互（CI / 无人值守）
 scripts/uninstall-gvgl-launchagent.sh
 ```
+
+安装脚本检查的是**刚被安装的那个二进制**（TCC 身份按路径绑定），
+不是当前 shell 里 PATH 上的那个。
 
 ## 性能指标（本机实测，80 App 在线）
 

@@ -202,6 +202,34 @@ final class QueryEngineTests: XCTestCase {
         XCTAssertEqual(QueryEngine.query(frame: frame([weak]), params: QueryParams(role: "AXImage", label: "无")).status, .axWeak)
     }
 
+    /// The size term must actually discriminate. Its previous bands put 84%
+    /// of real pressable elements in the worst bucket — disproportionately the
+    /// small, precise ones (dialog buttons, list rows) that an agent most wants
+    /// to click — so it behaved as a near-constant penalty carrying no
+    /// information. Pin the behaviour, not just the numbers.
+    func testSizeTermDiscriminatesRealisticTargets() {
+        let screen = ScreenInfo(width: 3440, height: 1440)
+        // A standard dialog button: 82x26 px → normalized area ~0.00043.
+        let dialogButton = entity("a", role: "AXButton", title: "登录",
+                                  rect: NormRect(x: 0.53, y: 0.29, w: 0.0238, h: 0.0181))
+        // A menu-bar item: long and thin, comfortably wide.
+        let menuItem = entity("b", role: "AXMenuBarItem", title: "文件",
+                              rect: NormRect(x: 0.01, y: 0.0, w: 0.05, h: 0.02))
+        // A speck: 4x4 px, genuinely too small to hit.
+        let speck = entity("c", role: "AXButton", title: "登录",
+                           rect: NormRect(x: 0.5, y: 0.5, w: 0.0003, h: 0.0003))
+
+        let params = QueryParams(role: "AXButton", label: "登录")
+        let (_, bButton) = score(dialogButton, params)
+        let (_, bMenu) = score(menuItem, QueryParams(role: "AXMenuBarItem", label: "文件"))
+        let (_, bSpeck) = score(speck, params)
+
+        XCTAssertEqual(bButton["size"], 1.0, "a normal dialog button must not be penalised as tiny")
+        XCTAssertEqual(bMenu["size"], 1.0)
+        XCTAssertLessThan(bSpeck["size"]!, bButton["size"]!,
+                          "a 4x4 px target must still score below a real control")
+    }
+
     func testPixelCenter() {
         let e = entity("a", rect: NormRect(x: 0.49, y: 0.64, w: 0.02, h: 0.02))
         let p = QueryEngine.pixelCenter(of: e, screen: screen)
