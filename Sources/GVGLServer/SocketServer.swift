@@ -186,8 +186,11 @@ public final class SocketServer: @unchecked Sendable {
             self?.pushLoop(fd, from: subscription.lastVersion, mask: subscription.mask)
         }
         thread.name = "gvgl.push"
-        // These threads are almost entirely parked in waitForVersion; a small
-        // stack keeps many concurrent subscriptions cheap.
+        // Left at the platform default (512K) deliberately: these threads are
+        // almost entirely parked in waitForVersion, so they are cheap in wall
+        // time, and shrinking the stack to save virtual address space would
+        // trade a real risk (overflow inside a deep JSON encode at high
+        // subscriber counts) for a benefit this workload does not need.
         thread.stackSize = 512 * 1024
         thread.start()
     }
