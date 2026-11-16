@@ -21,3 +21,6 @@ dist/
 .deeporca/reviews/
 .codegraph
 deepwiki
+
+# Python 运行时残留（评分一致性门等脚本会生成）
+__pycache__/
