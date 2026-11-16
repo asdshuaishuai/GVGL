@@ -308,6 +308,19 @@ final class DesktopViewModel: ObservableObject {
         }
     }
 
+    /// Console self-test: run one harmless action against this console through
+    /// the same executor agents use. Moving keyboard focus to the socket-path
+    /// field is idempotent, lives in the reliably-captured top strip of the
+    /// window, and the focus event makes the daemon bump its version — so the
+    /// action log gets a real, verified entry a human can read, without
+    /// touching anything on the real desktop.
+    func runSelfTest() {
+        let ownAppKey = "pid:\(ProcessInfo.processInfo.processIdentifier)"
+        runAction("focus", target: nil) { [executor] in
+            try executor.focus(.query(QueryParams(role: "AXTextField", label: "socket 路径", app: ownAppKey, top: 5)))
+        }
+    }
+
     // MARK: - Transcript (read-only; never gated by the execute toggle)
 
     func loadTranscriptForSelection() {

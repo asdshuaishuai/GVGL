@@ -19,7 +19,7 @@ open /Applications/GVGL.app
 审查台能力观测面：
 
 - 桌面画布（前台窗口标记 / 菜单栏色带 / 焦点描边）与实体详情（value/subrole/focused/zIndex/四层几何/层次链）
-- 指令面板（NL 指令 → 五维评分 → 定位）+ 动作条（语义按下 / 指针点击 / 输入 / 按键 / 滚动 / 读窗口文本）
+- 指令面板（NL 指令 → 五维评分 → 定位）+ 动作条（语义按下 / 指针点击 / 输入 / 按键 / 滚动 / 读窗口文本；含「演示动作」自测按钮——在控制台自身上跑一次无害 focus，让动作日志有真实数据可看）
 - 侧栏事件流（帧变化）与**动作日志**（方法 / 是否变化 / 是否验证 / 耗时 / 稳定错误码）
 - **窗口文本面板**：AX 树文本，替代截图（读选中窗口或前台 App）
 - 与 Agent 共用同一个执行器：控制台不自己实现点击；`允许执行动作` 是唯一闸门（读取文本不受限）
@@ -124,7 +124,7 @@ Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几
 ## 测试
 
 ```bash
-swift test        # 173 个单测：几何/显示空间/拓扑/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）+ 动作层（ID 文法/键位/结果编码/transcript 标签/重定位）+ 评分向量一致性
+swift test        # 161 个单测：几何/显示空间/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）+ 动作层（ID 文法/键位/结果编码/transcript 标签/重定位）+ 评分向量一致性
 python3 scripts/test_scoring_parity.py   # Swift QueryEngine 与 Python 客户端评分一致性（共用 Tests/Fixtures/query_vectors.json）
 ```
 
