@@ -34,13 +34,15 @@ final class GridIndexTests: XCTestCase {
         XCTAssertEqual(idx.gridSize, 4)
     }
 
+    /// The builder seam is gone (V6): the frame index is built once, at
+    /// materialization. What remains pinned is the grid/linear difference.
     func testBuilderSeam() {
         let es = [entity("a", centerX: 0.1, centerY: 0.1)]
-        let grid = GridIndexBuilder(gridSize: 2).build(from: es)
+        let grid = SpatialIndex.build(from: es, gridSize: 2)
         XCTAssertEqual(grid.gridSize, 2)
         XCTAssertFalse(grid.byGrid.isEmpty)
 
-        let linear = LinearScanIndexBuilder().build(from: es)
+        let linear = SpatialIndex.build(from: es, gridSize: 0)
         XCTAssertEqual(linear.gridSize, 0)
         XCTAssertTrue(linear.byGrid.isEmpty)
         XCTAssertEqual(linear.byRole["AXButton"], ["a"])
@@ -60,11 +62,6 @@ final class GridIndexTests: XCTestCase {
                        "implicit default must equal the product default (linear scan)")
         XCTAssertTrue(implicitBuild.byGrid.isEmpty)
         XCTAssertEqual(implicitBuild.byRole, explicitLinear.byRole)
-
-        let implicitBuilder = GridIndexBuilder().build(from: es)
-        XCTAssertEqual(implicitBuilder.gridSize, 0)
-        XCTAssertEqual(implicitBuilder.gridSize, LinearScanIndexBuilder().build(from: es).gridSize,
-                       "the default builder strategy must be the documented default")
     }
 
     func testBackwardCompatibleDecode() {

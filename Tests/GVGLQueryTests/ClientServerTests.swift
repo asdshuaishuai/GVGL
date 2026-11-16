@@ -48,7 +48,7 @@ final class ClientServerTests: XCTestCase {
 
     func testGetFrameRoundtrip() throws {
         model.upsert(appKey: "pid:1",
-                     output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()),
+                     output: PipelineOutput(entities: [makeEntity("e1")]),
                      meta: AppSnapshot(appKey: "pid:1", pid: 1, bundleID: nil, name: "A", status: .synced, capturedAt: Date(), entityCount: 1))
 
         let client = GVGLClient(socketPath: socketPath, timeout: 5)
@@ -77,7 +77,7 @@ final class ClientServerTests: XCTestCase {
 
     func testGetFrameSinceRoundtrip() throws {
         model.upsert(appKey: "pid:1",
-                     output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()),
+                     output: PipelineOutput(entities: [makeEntity("e1")]),
                      meta: AppSnapshot(appKey: "pid:1", pid: 1, bundleID: nil, name: "A", status: .synced, capturedAt: Date(), entityCount: 1))
         let client = GVGLClient(socketPath: socketPath, timeout: 5)
         _ = try client.getFrame()
@@ -89,7 +89,7 @@ final class ClientServerTests: XCTestCase {
         XCTAssertFalse(full1, "an exact cursor is a genuine no-op")
 
         model.upsert(appKey: "pid:2",
-                     output: PipelineOutput(entities: [makeEntity("e2")], relations: [], index: SpatialIndex()),
+                     output: PipelineOutput(entities: [makeEntity("e2")]),
                      meta: AppSnapshot(appKey: "pid:2", pid: 2, bundleID: nil, name: "B", status: .synced, capturedAt: Date(), entityCount: 1))
         let (frame2, apps2, full2) = try client.getFrameSince(v)
         XCTAssertNotNil(frame2)
@@ -123,7 +123,7 @@ final class ClientServerTests: XCTestCase {
             )
         }
         model.upsert(appKey: "pid:1",
-                     output: PipelineOutput(entities: entities, relations: [], index: SpatialIndex.build(from: entities, gridSize: 0)),
+                     output: PipelineOutput(entities: entities),
                      meta: AppSnapshot(appKey: "pid:1", pid: 1, bundleID: nil, name: "A", status: .synced, capturedAt: Date(), entityCount: 2000))
 
         let client = GVGLClient(socketPath: socketPath, timeout: 10)

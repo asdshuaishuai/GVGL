@@ -14,9 +14,7 @@ final class DesktopModelTests: XCTestCase {
             geometry: Geometry(screen: .unit, window: .unit)
         )
         return PipelineOutput(
-            entities: [e],
-            relations: [Relation(type: .inside, from: entityID, to: entityID)],
-            index: SpatialIndex.build(from: [e])
+            entities: [e]
         )
     }
 
@@ -73,7 +71,7 @@ final class DesktopModelTests: XCTestCase {
             geometry: Geometry(screen: .unit, window: .unit)
         )
         let output = PipelineOutput(
-            entities: [entity, entity], relations: [], index: SpatialIndex.build(from: [entity]),
+            entities: [entity, entity],
             cgWindowCount: 1, actionProbeFailures: 4, axWindowCount: 1
         )
         model.upsert(appKey: "pid:1", output: output, meta: meta("pid:1", 1, "A"))
@@ -279,7 +277,7 @@ final class DesktopModelTests: XCTestCase {
             e("c1", "AXToolbar", "w1"),
             e("g1", "AXButton", "c1"),
         ]
-        return PipelineOutput(entities: entities, relations: [], index: SpatialIndex.build(from: entities))
+        return PipelineOutput(entities: entities)
     }
 
     func testFrameDepthPruning() {
@@ -319,7 +317,7 @@ final class DesktopModelTests: XCTestCase {
     private func upsert(_ model: DesktopModel, _ e: Entity) {
         model.upsert(
             appKey: "pid:1",
-            output: PipelineOutput(entities: [e], relations: [], index: SpatialIndex.build(from: [e])),
+            output: PipelineOutput(entities: [e]),
             meta: meta("pid:1", 1, "A")
         )
     }
@@ -402,7 +400,7 @@ final class DesktopModelTests: XCTestCase {
         let b = windowEntity(id: "b", displayRect: NormRect(x: 0.1, y: 0.7, w: 0.1, h: 0.1), displayID: 2)   // d2q3
         model.upsert(
             appKey: "pid:1",
-            output: PipelineOutput(entities: [a, b], relations: [], index: SpatialIndex()),
+            output: PipelineOutput(entities: [a, b]),
             meta: meta("pid:1", 1, "A")
         )
         XCTAssertEqual(model.changedRegions(after: 0), ["d1q2", "d2q3"])
@@ -410,7 +408,7 @@ final class DesktopModelTests: XCTestCase {
         let v1 = model.version
         model.upsert(
             appKey: "pid:1",
-            output: PipelineOutput(entities: [a, b], relations: [], index: SpatialIndex()),
+            output: PipelineOutput(entities: [a, b]),
             meta: meta("pid:1", 1, "A")
         )
         XCTAssertEqual(model.changedRegions(after: v1), [], "byte-identical upsert touches no bucket")
@@ -420,7 +418,7 @@ final class DesktopModelTests: XCTestCase {
         b2.title = "改"
         model.upsert(
             appKey: "pid:1",
-            output: PipelineOutput(entities: [a, b2], relations: [], index: SpatialIndex()),
+            output: PipelineOutput(entities: [a, b2]),
             meta: meta("pid:1", 1, "A")
         )
         XCTAssertEqual(model.changedRegions(after: v1), ["d2q3"])

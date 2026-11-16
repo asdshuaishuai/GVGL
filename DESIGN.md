@@ -133,6 +133,10 @@ Web 页（单窗数千 AXStaticText）可产生数百万对关系、单帧数百
 App）：每个 App 的流水线内做"所有实体两两"（同窗口对用窗口空间、跨窗口对用
 屏幕空间），跨 App 对不产生关系——与原始文档一致（V1 本无跨 App 概念）。
 
+V6 起关系计算已从守护进程删除（`Relation`/`TopologyComputer`/`PipelineOutput.relations`/
+索引 builder 缝全部下线）：本节保留为**规则定义**——方向/near/同象限的判定由消费方按
+几何实现（§6.2 SpatialRelationScore），inside/contains 由场景树表达。
+
 ### 3.3 场景图结构（V4）
 
 | 层 | 内容 | 用途 |
@@ -165,8 +169,9 @@ AX 树（每 App 独立）
       丢弃 AXGroup/ScrollArea/ClipView；丢弃 zero/超小 frame
   → Step2 归一化：转换 1→2，派生量，空间标签
   → Step2.5 Z-order：窗口实体匹配 CG on-screen 窗口（中心距 <24px）→ zIndex
-  → Step3 拓扑：关系计算默认关闭（V4：帧不再携带关系；`computeRelations`
-      仅供测试/直接消费者）；inside 语义由 Step5 的场景树结构表达
+  → Step3 拓扑：V6 起关系计算已从守护进程移除（TopologyComputer/Relation/
+      PipelineOutput.relations/索引 builder 缝全部删除）；inside 语义由 Step5
+      的场景树结构表达，方向/near/同象限规则由消费方按几何实现（§6.2）
   → Step4 索引：byRegion / byRole / byWindow / byApp
   → Step5 组装帧（DesktopModel 物化，O(N)，无 AX 调用）：
       平铺实体 → SceneTree 嵌套树（entityParentID → children，自然 AX 序，
@@ -335,10 +340,9 @@ Sources/GVGLCore/   流水线（纯逻辑，合成 fixture 可单测）
   AXValueCoercion.swift  AXValue 统一强转（感知与动作验证共用，避免"同一字段两种读法"）
   CGWindowProbe.swift CGWindowList 第二数据源（窗口级交叉校验，V2-3）
   Geometry.swift      坐标转换（M0 锁定版 + 多屏）
-  Topology.swift      关系 + R12 裁剪 + 上限（V4 起仅测试/直接消费者使用）
-  Pipeline.swift      快照 → 实体/索引（显示器解析 + z-order + CG 缺失窗口检测）
+  Pipeline.swift      快照 → 实体（角色白名单/几何/祖先/z-order；不再产关系与索引）
   IDStabilizer.swift  跨重建 ID 稳定 + PipelineOutput.remapped
-  （SpatialIndex 类型与 builder 位于 Models.swift）
+  （SpatialIndex 类型位于 Models.swift）
 Sources/GVGLSync/   半同步引擎
   DesktopModel.swift  常驻模型 + version + 变更日志 + 帧物化
   ObserverRegistry.swift  每 App AXObserver（专用 RunLoop 线程）
@@ -350,7 +354,7 @@ Sources/GVGLAction/ computer-use 执行层（元素解析/语义动作/合成事
 Sources/gvglact/    执行器 CLI（press/click/type/key/scroll/drag/menu/transcript/app/…）
 client/gvgl_query.py 参考客户端（status/frame/list/query/subscribe/watch + --json/--cell）
 scripts/             launchd 安装/卸载 + audit_geometry.py + audit_no_screenshot.sh + act_smoke.py
-Tests/              173 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签/重定位；评分向量双端一致性）
+Tests/              161 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签/重定位；评分向量双端一致性）
 ```
 
 ## 11. 运行参数
@@ -404,7 +408,7 @@ Tests/              173 个单测（不依赖真实 AX；动作层含 ID 文法/
 
 | # | 项 | 状态 |
 | :--- | :--- | :--- |
-| 1 | **可替换空间索引**：`SpatialIndexBuilding` 协议缝 + `GridIndexBuilder`/`LinearScanIndexBuilder`；**默认线性扫描（原始帧结构 by_region/by_role/by_window）**，`--index-grid N` 可选网格（byGrid 空间哈希 + 客户端 `--cell` 预过滤）。说明：R-Tree 不实现——查询按设计在客户端执行，帧内索引需要哈希查找而非服务端空间树 | ✅ 已实现（默认对齐原始） |
+| 1 | **可替换空间索引**：`SpatialIndexBuilding` 协议缝 + `GridIndexBuilder`/`LinearScanIndexBuilder`；**默认线性扫描（原始帧结构 by_region/by_role/by_window）**，`--index-grid N` 可选网格（byGrid 空间哈希 + 客户端 `--cell` 预过滤）。说明：R-Tree 不实现——查询按设计在客户端执行，帧内索引需要哈希查找而非服务端空间树。V6 修订：协议缝与 per-App 索引已删除（帧索引只在物化时构建一次；per-App 副本是从不被读的死计算），网格/线性由 `SpatialIndex.build(gridSize:)` 直接表达 | ✅ 已实现（默认对齐原始）；V6 简化 |
 | 2 | **Polygon 几何** | ⏸ 延后：价值低（V1 明确 Rect 优先），复杂度高（AX 形状 API 不稳定），等有真实用例再做 |
 | 3 | **CGWindow 交叉校验**：`CGWindowProbe` 诊断（cgWindowCount/missingWindowTitles）由 `--cg-check` 开启；**V3 起探针常开**用于窗口 zIndex（本地调用，几何仍以 AX 为准，见 §0.1 #22） | ✅ 已实现（V3 修订默认） |
 | 4 | **弱 AX 兜底（OCR/Vision）** | ⏸ 延后：大范围独立进程（守护进程保持无截图铁律），待有明确需求立项 |

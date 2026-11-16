@@ -74,12 +74,6 @@ public final class SyncEngine: @unchecked Sendable {
     /// If set, called each reconciler tick to refresh the screen geometry
     /// (display resolution/scale changes should not stale normalization).
     public var screenReader: (() -> ScreenInfo)?
-    /// Index grid resolution used by the pipeline (0 = linear scan).
-    public var indexGridSize: Int = 0
-    /// V4: frames are scene trees and no longer carry precomputed relations
-    /// (clients compute them geometrically on demand) — so the daemon skips
-    /// the O(N²) relation pass entirely.
-    public var computeRelations = false
 
     private let lock = NSLock()
     private var infos: [String: AppInfo] = [:]
@@ -468,7 +462,7 @@ public final class SyncEngine: @unchecked Sendable {
             return
         }
 
-        let output = Pipeline(screen: screen, gridSize: indexGridSize, computeRelations: computeRelations).process(snapshot)
+        let output = Pipeline(screen: screen).process(snapshot)
         // Heuristic ID stabilization: reuse the previous capture's ids for
         // elements that provably didn't change, so client references survive
         // full re-captures even when the AX tree path shifted.
@@ -552,7 +546,7 @@ public final class SyncEngine: @unchecked Sendable {
         lock.unlock()
 
         guard subtree.error == nil else { return }
-        let output = Pipeline(screen: screen, gridSize: indexGridSize, computeRelations: computeRelations).process(subtree)
+        let output = Pipeline(screen: screen).process(subtree)
         guard let previous = model.output(appKey: info.appKey) else { return }
 
         let merged = mergeWindow(previous: previous, subtree: output, windowID: windowID)
@@ -593,11 +587,8 @@ public final class SyncEngine: @unchecked Sendable {
             !subtreeIDs.contains(e.id) && !isInSubtreeNamespace(e.id, of: windowID) && e.windowID != windowID
         }
         let entities = (keep + subtree.entities).sorted { $0.id < $1.id }
-        let relations = computeRelations ? TopologyComputer().compute(entities: entities) : []
         return PipelineOutput(
             entities: entities,
-            relations: relations,
-            index: SpatialIndex.build(from: entities, gridSize: indexGridSize),
             cgWindowCount: previous.cgWindowCount,
             axWindowCount: previous.axWindowCount,
             missingWindowTitles: previous.missingWindowTitles

@@ -1,33 +1,35 @@
 import Foundation
 
+/// One app's normalized capture. Deliberately flat: every field is either
+/// entity data or a capture diagnostic.
+///
+/// The per-app spatial index and the relation set are gone (V6): the frame
+/// index is built once at materialization, so the per-app copy was dead
+/// compute; and V4 frames never serialized relations. Keeping this struct
+/// small matters — it is rebuilt by hand at several sites, and every extra
+/// field is another place a diagnostic can be silently dropped (the
+/// `actionProbeFailures` class of bug).
 public struct PipelineOutput: Hashable, Sendable {
     public var entities: [Entity]
-    public var relations: [Relation]
-    public var index: SpatialIndex
     /// V2-3 CGWindow cross-check stats (0/0/[] when no probe data).
     public var cgWindowCount: Int
-    /// AX action probes that errored during capture (see AXAppSnapshot).
+    /// AX action probes that errored during the last capture (see AXAppSnapshot).
     public var actionProbeFailures: Int
     public var axWindowCount: Int
     public var missingWindowTitles: [String]
 
     public static let empty = PipelineOutput(
-        entities: [], relations: [], index: SpatialIndex(),
-        cgWindowCount: 0, actionProbeFailures: 0, axWindowCount: 0, missingWindowTitles: []
+        entities: [], cgWindowCount: 0, actionProbeFailures: 0, axWindowCount: 0, missingWindowTitles: []
     )
 
     public init(
         entities: [Entity],
-        relations: [Relation],
-        index: SpatialIndex,
         cgWindowCount: Int = 0,
         actionProbeFailures: Int = 0,
         axWindowCount: Int = 0,
         missingWindowTitles: [String] = []
     ) {
         self.entities = entities
-        self.relations = relations
-        self.index = index
         self.cgWindowCount = cgWindowCount
         self.actionProbeFailures = actionProbeFailures
         self.axWindowCount = axWindowCount
@@ -35,21 +37,22 @@ public struct PipelineOutput: Hashable, Sendable {
     }
 }
 
-/// Converts one app's AX snapshot into normalized entities, relations and index.
+/// Converts one app's AX snapshot into normalized entities.
 public final class Pipeline: @unchecked Sendable {
     public let screen: ScreenInfo
     /// Minimum physical area (px^2) for an element to become an entity.
     public var minArea: Double
     public var interactiveRoles: Set<String>
-    /// Replaceable index builder (V2-1): grid by default, linear-scan for V1
-    /// compatibility, any future strategy behind the same seam.
-    public var indexBuilder: SpatialIndexBuilding
-    /// Whether to compute the O(N²) relation set (direction/near/aligned).
-    /// V4 frames no longer serialize relations (clients compute them
-    /// geometrically on demand), so the daemon passes false to save the CPU;
-    /// tests and direct Pipeline consumers keep the default true.
-    public var computeRelations: Bool
 
+    public init(
+        screen: ScreenInfo,
+        minArea: Double = 1.0,
+        interactiveRoles: Set<String> = Pipeline.defaultInteractiveRoles
+    ) {
+        self.screen = screen
+        self.minArea = minArea
+        self.interactiveRoles = interactiveRoles
+    }
     public static let defaultInteractiveRoles: Set<String> = [
         // V1 原始 13 种
         "AXButton", "AXTextField", "AXCheckBox", "AXRadioButton",
@@ -73,20 +76,6 @@ public final class Pipeline: @unchecked Sendable {
         // 动作层据此判断滚动是否还可能有效，agent 也不必凭空尝试。
         "AXScrollBar",
     ]
-
-    public init(
-        screen: ScreenInfo,
-        minArea: Double = 1.0,
-        interactiveRoles: Set<String> = Pipeline.defaultInteractiveRoles,
-        gridSize: Int = 0,
-        computeRelations: Bool = true
-    ) {
-        self.screen = screen
-        self.minArea = minArea
-        self.interactiveRoles = interactiveRoles
-        self.indexBuilder = GridIndexBuilder(gridSize: gridSize)
-        self.computeRelations = computeRelations
-    }
 
     public func process(_ snapshot: AXAppSnapshot) -> PipelineOutput {
         let coords = CoordinateComputer(screen: screen)
@@ -179,15 +168,10 @@ public final class Pipeline: @unchecked Sendable {
         // V3: global window z-order from the CG probe (front-to-back rank).
         assignZOrder(entities: &entities, cgWindows: snapshot.cgWindows)
 
-        let relations = computeRelations ? TopologyComputer().compute(entities: entities) : []
-        let index = indexBuilder.build(from: entities)
-
         let windowStats = crossCheckWindows(entities: entities, snapshot: snapshot)
 
         return PipelineOutput(
             entities: entities.sorted { $0.id < $1.id },
-            relations: relations,
-            index: index,
             cgWindowCount: windowStats.cgCount,
             actionProbeFailures: snapshot.actionProbeFailures,
             axWindowCount: windowStats.axCount,

@@ -112,8 +112,6 @@ public final class DesktopModel: @unchecked Sendable {
         if deduped.count != output.entities.count {
             finalOutput = PipelineOutput(
                 entities: deduped,
-                relations: output.relations,
-                index: SpatialIndex.build(from: deduped, gridSize: gridSizeStorage),
                 cgWindowCount: output.cgWindowCount,
                 actionProbeFailures: output.actionProbeFailures,
                 axWindowCount: output.axWindowCount,
@@ -129,8 +127,6 @@ public final class DesktopModel: @unchecked Sendable {
         if didStabilize {
             finalOutput = PipelineOutput(
                 entities: stabilized,
-                relations: finalOutput.relations,
-                index: SpatialIndex.build(from: stabilized, gridSize: gridSizeStorage),
                 cgWindowCount: finalOutput.cgWindowCount,
                 actionProbeFailures: finalOutput.actionProbeFailures,
                 axWindowCount: finalOutput.axWindowCount,
@@ -418,7 +414,7 @@ public final class DesktopModel: @unchecked Sendable {
             ))
         }
         let flat = scene.flatMap { SceneTree.flatten($0.children) }
-        let index = GridIndexBuilder(gridSize: gridSizeStorage).build(from: flat)
+        let index = SpatialIndex.build(from: flat, gridSize: gridSizeStorage)
 
         let status: FrameStatus
         if states.isEmpty {

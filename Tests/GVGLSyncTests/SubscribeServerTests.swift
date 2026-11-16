@@ -141,7 +141,7 @@ final class SubscribeServerTests: XCTestCase {
         model.setFrontmost(appKey: "pid:1")
         model.upsert(
             appKey: "pid:1",
-            output: PipelineOutput(entities: [entity], relations: [], index: SpatialIndex()),
+            output: PipelineOutput(entities: [entity]),
             meta: meta("pid:1", 1)
         )
         let fd = clientSocket()
@@ -167,9 +167,9 @@ final class SubscribeServerTests: XCTestCase {
 
     func testGetFrameSinceChanged() {
         let model = self.model
-        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
+        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")]), meta: meta("pid:1", 1))
         let v1 = model.version
-        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")], relations: [], index: SpatialIndex()), meta: meta("pid:2", 2))
+        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")]), meta: meta("pid:2", 2))
 
         let fd = clientSocket()
         sendLine(fd, #"{"method":"get_frame","since":"# + "\(v1)" + "}")
@@ -185,7 +185,7 @@ final class SubscribeServerTests: XCTestCase {
             let appKey = "pid:\(i)"
             model.upsert(
                 appKey: appKey,
-                output: PipelineOutput(entities: [makeEntity("e\(i)")], relations: [], index: SpatialIndex()),
+                output: PipelineOutput(entities: [makeEntity("e\(i)")]),
                 meta: meta(appKey, Int32(i))
             )
         }
@@ -205,12 +205,12 @@ final class SubscribeServerTests: XCTestCase {
         XCTAssertTrue(ack.contains(#""event":"subscribed""#), "got: \(ack)")
 
         // Bump the model twice; expect two push events.
-        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
+        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")]), meta: meta("pid:1", 1))
         let event1 = readLine(fd)
         XCTAssertTrue(event1.contains(#""event":"frame""#), "got: \(event1)")
         XCTAssertTrue(event1.contains("pid:1"), "got: \(event1)")
 
-        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")], relations: [], index: SpatialIndex()), meta: meta("pid:2", 2))
+        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")]), meta: meta("pid:2", 2))
         let event2 = readLine(fd)
         XCTAssertTrue(event2.contains(#""event":"frame""#), "got: \(event2)")
         XCTAssertTrue(event2.contains("pid:2"), "got: \(event2)")
@@ -219,14 +219,14 @@ final class SubscribeServerTests: XCTestCase {
 
     func testSubscribeSinceSkipsOlderVersions() {
         let model = self.model
-        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
+        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")]), meta: meta("pid:1", 1))
         let v1 = model.version
 
         let fd = clientSocket()
         sendLine(fd, #"{"method":"subscribe","since":"# + "\(v1)" + "}")
         _ = readLine(fd) // ack
 
-        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")], relations: [], index: SpatialIndex()), meta: meta("pid:2", 2))
+        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")]), meta: meta("pid:2", 2))
         let event = readLine(fd)
         XCTAssertTrue(event.contains("pid:2"), "got: \(event)")
         XCTAssertFalse(event.contains("pid:1"), "pre-since changes must not be reported: \(event)")
@@ -238,7 +238,7 @@ final class SubscribeServerTests: XCTestCase {
     /// a full refresh, and the next bump is still delivered.
     func testSubscribeWithFutureCursorIsClampedAndFlagged() {
         let model = self.model
-        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
+        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")]), meta: meta("pid:1", 1))
         let current = model.version
 
         let fd = clientSocket()
@@ -250,7 +250,7 @@ final class SubscribeServerTests: XCTestCase {
 
         // Without clamping this bump would never wake the loop (the cursor is
         // already ahead of the new version), so the client would hang silent.
-        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")], relations: [], index: SpatialIndex()), meta: meta("pid:2", 2))
+        model.upsert(appKey: "pid:2", output: PipelineOutput(entities: [makeEntity("e2")]), meta: meta("pid:2", 2))
         let event = readLine(fd)
         XCTAssertTrue(event.contains(#""event":"frame"#), "got: \(event)")
         XCTAssertTrue(event.contains("pid:2"), "got: \(event)")
@@ -261,7 +261,7 @@ final class SubscribeServerTests: XCTestCase {
     /// that resumes from the acked version never misses a bump.
     func testSubscribeAckVersionIsCurrentAndNoRefreshWhenInSync() {
         let model = self.model
-        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")], relations: [], index: SpatialIndex()), meta: meta("pid:1", 1))
+        model.upsert(appKey: "pid:1", output: PipelineOutput(entities: [makeEntity("e1")]), meta: meta("pid:1", 1))
         let current = model.version
 
         let fd = clientSocket()
@@ -333,7 +333,7 @@ final class SubscribeServerTests: XCTestCase {
         func upsert(_ e: Entity, app: String, pid: Int32) {
             model.upsert(
                 appKey: app,
-                output: PipelineOutput(entities: [e], relations: [], index: SpatialIndex()),
+                output: PipelineOutput(entities: [e]),
                 meta: meta(app, pid)
             )
         }
@@ -377,8 +377,7 @@ final class SubscribeServerTests: XCTestCase {
         for i in 0..<12 {
             model.upsert(
                 appKey: "pid:9",
-                output: PipelineOutput(entities: [entity("far\(i)", rect: NormRect(x: 0.1, y: 0.7, w: 0.1, h: 0.1))],
-                                       relations: [], index: SpatialIndex()),
+                output: PipelineOutput(entities: [entity("far\(i)", rect: NormRect(x: 0.1, y: 0.7, w: 0.1, h: 0.1))]),
                 meta: meta("pid:9", 9)
             )
         }
@@ -389,8 +388,7 @@ final class SubscribeServerTests: XCTestCase {
         // Matching-region bump: frame event still arrives on the same fd.
         model.upsert(
             appKey: "pid:1",
-            output: PipelineOutput(entities: [entity("near", rect: NormRect(x: 0.6, y: 0.2, w: 0.1, h: 0.1))],
-                                   relations: [], index: SpatialIndex()),
+            output: PipelineOutput(entities: [entity("near", rect: NormRect(x: 0.6, y: 0.2, w: 0.1, h: 0.1))]),
             meta: meta("pid:1", 1)
         )
         let event = readLine(fd, timeout: 3)

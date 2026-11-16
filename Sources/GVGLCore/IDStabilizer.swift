@@ -105,7 +105,7 @@ public enum IDStabilizer {
 }
 
 public extension PipelineOutput {
-    /// Rewrites entity/relation ids and rebuilds the index after stabilization.
+    /// Rewrites entity ids after stabilization.
     ///
     /// Collision-safe: a re-keyed entity never steals the id of an entity that
     /// kept its own (stable references win; the duplicate re-key is dropped).
@@ -140,21 +140,10 @@ public extension PipelineOutput {
             remappedEntities.append(e)
         }
 
-        // Remap is a pure re-keying: every entity pre-remap exists, so every
-        // relation endpoint resolves to a live entity after remapping.
-        let remappedRelations = relations.map { r in
-            Relation(
-                type: r.type,
-                from: remapID(r.from) ?? r.from,
-                to: remapID(r.to) ?? r.to,
-                distance: r.distance
-            )
-        }
-
+        // V4 frames are scene trees and carry no relations; V6 removed the
+        // per-app index, so a re-key is now just the entity list.
         return PipelineOutput(
             entities: remappedEntities,
-            relations: remappedRelations,
-            index: SpatialIndex.build(from: remappedEntities, gridSize: index.gridSize),
             // CG cross-check stats survive re-keying (previously dropped).
             cgWindowCount: cgWindowCount,
             // Diagnostics are part of the output contract: dropping them on a

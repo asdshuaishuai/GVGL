@@ -119,23 +119,6 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(byID["pid:1:0"]?.geometry.local, .unit)
     }
 
-    func testRelations() {
-        let out = Pipeline(screen: screen).process(fixture())
-        let rs = Set(out.relations)
-
-        XCTAssertTrue(rs.contains(Relation(type: .inside, from: "pid:1:0-0-0", to: "pid:1:0")))
-        XCTAssertTrue(rs.contains(Relation(type: .inside, from: "pid:1:0-0-0-0", to: "pid:1:0-0-0")))
-        XCTAssertTrue(rs.contains(Relation(type: .contains, from: "pid:1:0", to: "pid:1:0-0-0")))
-        // Button (bottom 0.1833) above text field (top 0.3167).
-        XCTAssertTrue(rs.contains(Relation(type: .above, from: "pid:1:0-0-0", to: "pid:1:0-1")))
-        // Static text inside button → no direction relation between them.
-        XCTAssertFalse(rs.contains {
-            let pair = Set([$0.from, $0.to]) == Set(["pid:1:0-0-0", "pid:1:0-0-0-0"])
-            return pair && ($0.type == .above || $0.type == .below
-                || $0.type == .leftOf || $0.type == .rightOf)
-        })
-    }
-
     func testEntityAppNamePropagation() {
         let out = Pipeline(screen: screen).process(fixture())
         let byID = Dictionary(uniqueKeysWithValues: out.entities.map { ($0.id, $0) })
@@ -147,20 +130,6 @@ final class PipelineTests: XCTestCase {
         snapshot.appName = "测试应用"
         let out = Pipeline(screen: screen).process(snapshot)
         XCTAssertTrue(out.entities.allSatisfy { $0.appName == "测试应用" })
-    }
-
-    func testIndex() {
-        let out = Pipeline(screen: screen).process(fixture())
-        XCTAssertEqual(out.index.byRole["AXButton"], ["pid:1:0-0-0"])
-        XCTAssertEqual(out.index.byWindow["pid:1:0"], [
-            "pid:1:0", "pid:1:0-0-0", "pid:1:0-0-0-0", "pid:1:0-1"
-        ])
-        XCTAssertEqual(out.index.byApp["pid:1"], [
-            "pid:1:0", "pid:1:0-0-0", "pid:1:0-0-0-0", "pid:1:0-1"
-        ])
-        XCTAssertEqual(out.index.byRegion["q1"], [
-            "pid:1:0", "pid:1:0-0-0", "pid:1:0-0-0-0", "pid:1:0-1"
-        ])
     }
 
     func testSecondaryDisplayEntityUsesMainScreenNormalization() {

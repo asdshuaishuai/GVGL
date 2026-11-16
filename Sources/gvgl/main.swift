@@ -166,7 +166,6 @@ if let onlyApps {
     engineInstance.allowedBundleIDs = Set(onlyApps.split(separator: ",").map(String.init))
 }
 engineInstance.screenReader = mainScreenInfo
-engineInstance.indexGridSize = indexGrid
 engineInstance.slowCaptureThreshold = max(1.0, captureTime)
 model.gridSize = indexGrid
 engine = engineInstance

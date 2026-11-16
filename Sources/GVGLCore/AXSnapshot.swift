@@ -1,6 +1,12 @@
 import ApplicationServices
 import Foundation
 
+/// AX role constant for windows. It used to live at the bottom of
+/// Topology.swift, which was deleted with the relation machinery in V6; the
+/// traversal here and the stabilizer/observer both depend on it, so it stays
+/// next to the AX vocabulary.
+public let kAXWindowRole = "AXWindow"
+
 /// Raw snapshot node mirroring the AX tree (pre-normalization).
 public struct AXNode: Hashable, Sendable {
     public var id: String

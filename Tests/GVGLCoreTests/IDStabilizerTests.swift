@@ -91,19 +91,10 @@ final class IDStabilizerTests: XCTestCase {
         ]
         let map = IDStabilizer.stabilize(old: oldEntities, new: newEntities)
 
-        let relations = [
-            Relation(type: .above, from: "pid:1:0-4", to: "pid:1:0-5"),
-        ]
-        let output = PipelineOutput(
-            entities: newEntities,
-            relations: relations,
-            index: SpatialIndex.build(from: newEntities)
-        )
+        let output = PipelineOutput(entities: newEntities)
         let remapped = output.remapped(by: map)
 
         XCTAssertEqual(remapped.entities.map(\.id), ["pid:1:0-2", "pid:1:0-3"])
-        XCTAssertEqual(remapped.relations, [Relation(type: .above, from: "pid:1:0-2", to: "pid:1:0-3")])
-        XCTAssertEqual(remapped.index.byRole["AXButton"], ["pid:1:0-2"])
         XCTAssertEqual(remapped.entities.first?.entityParentID, "w1")
     }
 
@@ -112,8 +103,6 @@ final class IDStabilizerTests: XCTestCase {
         let e = entity("pid:1:0", role: "AXWindow", windowID: nil)
         let output = PipelineOutput(
             entities: [e],
-            relations: [],
-            index: SpatialIndex.build(from: [e]),
             cgWindowCount: 3, axWindowCount: 2, missingWindowTitles: ["孤窗"]
         )
         let remapped = output.remapped(by: ["pid:1:0": "pid:1:9"])
@@ -130,25 +119,10 @@ final class IDStabilizerTests: XCTestCase {
         let e = entity("pid:1:0", title: "登录")
         let output = PipelineOutput(
             entities: [e],
-            relations: [],
-            index: SpatialIndex.build(from: [e]),
             actionProbeFailures: 4
         )
         let remapped = output.remapped(by: ["pid:1:0": "pid:1:9"])
         XCTAssertEqual(remapped.actionProbeFailures, 4)
-    }
-
-    func testRemappedPreservesSpatialIndexGridSize() {
-        let original = entity("pid:1:0-4", title: "登录")
-        let output = PipelineOutput(
-            entities: [original],
-            relations: [],
-            index: SpatialIndex.build(from: [original], gridSize: 2)
-        )
-
-        let remapped = output.remapped(by: ["pid:1:0-4": "pid:1:0-2"])
-        XCTAssertEqual(remapped.index.gridSize, 2)
-        XCTAssertEqual(remapped.index.byRole["AXButton"], ["pid:1:0-2"])
     }
 
     /// A re-keyed entity must never steal the id of an entity that kept its
@@ -159,14 +133,11 @@ final class IDStabilizerTests: XCTestCase {
         let kept = entity("pid:1:0-1", title: "确定")
         let rekeyed = entity("pid:1:0-7", title: "确定")
         let output = PipelineOutput(
-            entities: [kept, rekeyed],
-            relations: [],
-            index: SpatialIndex.build(from: [kept, rekeyed])
+            entities: [kept, rekeyed]
         )
         // Path-shifted candidate matched the same old element that survived.
         let remapped = output.remapped(by: ["pid:1:0-7": "pid:1:0-1"])
         XCTAssertEqual(remapped.entities.map(\.id), ["pid:1:0-1"],
                        "kept entity claims the id; the colliding re-key is dropped")
-        XCTAssertEqual(remapped.index.byRole["AXButton"], ["pid:1:0-1"])
     }
 }

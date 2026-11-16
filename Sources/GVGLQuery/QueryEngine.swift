@@ -71,6 +71,11 @@ public enum QueryEngine {
     public static let weights: (semantic: Double, role: Double, spatial: Double, size: Double, topology: Double) =
         (0.35, 0.20, 0.25, 0.10, 0.10)
 
+    /// Near threshold in normalized space (design doc §3.2). Lives here since
+    /// V4 computes spatial relations geometrically on demand; the old
+    /// TopologyComputer is gone.
+    public static let nearThreshold = 0.05
+
     public static let compatibleRoles: [String: Set<String>] = [
         "AXButton": ["AXButton", "AXMenuItem"],
         "AXMenuItem": ["AXMenuItem", "AXButton"],
@@ -82,21 +87,6 @@ public enum QueryEngine {
         "AXComboBox": ["AXComboBox", "AXTextField", "AXPopUpButton"],
         "AXPopUpButton": ["AXPopUpButton", "AXComboBox"],
     ]
-
-    public struct RelationKey: Hashable {
-        public let type: String
-        public let from: String
-        public let to: String
-        public init(type: String, from: String, to: String) {
-            self.type = type
-            self.from = from
-            self.to = to
-        }
-    }
-
-    public static func relationKeys(_ relations: [Relation]) -> Set<RelationKey> {
-        Set(relations.map { RelationKey(type: $0.type.rawValue, from: $0.from, to: $0.to) })
-    }
 
     public static func query(frame: GVGLFrame, params: QueryParams) -> QueryResult {
         let entities: [Entity] = params.app.map { app in
@@ -275,7 +265,7 @@ public enum QueryEngine {
 
         let dx = a.centerX - b.centerX
         let dy = a.centerY - b.centerY
-        let isNear = (dx * dx + dy * dy).squareRoot() < TopologyComputer.nearThreshold
+        let isNear = (dx * dx + dy * dy).squareRoot() < QueryEngine.nearThreshold
 
         if normalized == "near" {
             if isNear { return 1.0 }

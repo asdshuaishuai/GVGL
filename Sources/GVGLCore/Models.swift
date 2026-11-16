@@ -363,27 +363,6 @@ public extension Entity {
     }
 }
 
-// MARK: - Relation
-
-public enum RelationType: String, Codable, Hashable, Sendable, CaseIterable {
-    case above, below, leftOf, rightOf, inside, contains, near, aligned
-}
-
-public struct Relation: Codable, Hashable, Sendable {
-    public var type: RelationType
-    public var from: String
-    public var to: String
-    /// Present for `near`: normalized Euclidean distance.
-    public var distance: Double?
-
-    public init(type: RelationType, from: String, to: String, distance: Double? = nil) {
-        self.type = type
-        self.from = from
-        self.to = to
-        self.distance = distance
-    }
-}
-
 // MARK: - Spatial index
 
 /// Spatial index serialized into frames for client-side pre-filtering.
@@ -475,38 +454,6 @@ public struct SpatialIndex: Codable, Hashable, Sendable {
         idx.byApp = idx.byApp.mapValues { $0.sorted() }
         idx.byGrid = idx.byGrid.mapValues { $0.sorted() }
         return idx
-    }
-}
-
-/// The replaceable index builder seam (V2-1). The daemon's pipeline and frame
-/// materialization go through this so the strategy can be swapped without
-/// touching callers. R-Tree is deliberately not implemented: queries run
-/// client-side by design, so the serialized frame index needs hash lookups
-/// (region / role / grid), not a server-side spatial tree.
-public protocol SpatialIndexBuilding: Sendable {
-    func build(from entities: [Entity]) -> SpatialIndex
-}
-
-public struct GridIndexBuilder: SpatialIndexBuilding {
-    public var gridSize: Int
-
-    /// Defaults to the product default (linear scan) for the same reason as
-    /// `SpatialIndex.build` — see the note there.
-    public init(gridSize: Int = 0) {
-        self.gridSize = gridSize
-    }
-
-    public func build(from entities: [Entity]) -> SpatialIndex {
-        SpatialIndex.build(from: entities, gridSize: gridSize)
-    }
-}
-
-/// V1-compatible builder (region/role/window/app only, no grid).
-public struct LinearScanIndexBuilder: SpatialIndexBuilding {
-    public init() {}
-
-    public func build(from entities: [Entity]) -> SpatialIndex {
-        SpatialIndex.build(from: entities, gridSize: 0)
     }
 }
 
