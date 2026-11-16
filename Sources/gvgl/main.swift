@@ -45,6 +45,8 @@ private var socketPath = FileManager.default.homeDirectoryForCurrentUser
 private var reconcileInterval: Double = 3.0
 private var onlyApps: String?
 private var indexGrid: Int = 0
+private var nodeBudget: Int = 3000
+private var captureTime: Double = 1.0
 private var cgCheck = false
 private var verbose = false
 private var server: SocketServer?
@@ -67,6 +69,16 @@ private func parseArguments() {
         case "--index-grid":
             i += 1
             if i < args.count { indexGrid = max(0, Int(args[i]) ?? 0) }
+        case "--node-budget":
+            // Heavy SwiftUI/Electron windows blow past the 3000-node default
+            // and get truncated mid-tree, which hides whole regions from both
+            // agents and the review console. Raising the budget is a
+            // deliberate trade: more entities per capture, more wall clock.
+            i += 1
+            if i < args.count { nodeBudget = max(1, Int(args[i]) ?? 3000) }
+        case "--capture-time":
+            i += 1
+            if i < args.count { captureTime = max(0.1, Double(args[i]) ?? 1.0) }
         case "--cg-check":
             cgCheck = true
         case "--verbose":
@@ -101,7 +113,8 @@ private func parseArguments() {
             print("""
             gvgl — semi-sync virtual desktop daemon
             usage: gvgl [--socket PATH] [--reconcile SECONDS] [--only-apps com.a,com.b]
-                        [--index-grid N] [--cg-check] [--verbose] [--version]
+                        [--index-grid N] [--node-budget N] [--capture-time SECONDS]
+                        [--cg-check] [--verbose] [--version]
                         [--print-socket] [--check-permission]
             """)
             exit(0)
@@ -139,7 +152,10 @@ setvbuf(stdout, nil, _IONBF, 0)
 setvbuf(stderr, nil, _IONBF, 0)
 
 let model = DesktopModel()
-let capturer = Snapshotter(config: SnapshotConfig(cgProbeEnabled: cgCheck))
+var snapshotConfig = SnapshotConfig(cgProbeEnabled: cgCheck)
+snapshotConfig.nodeBudget = nodeBudget
+snapshotConfig.maxCaptureTime = captureTime
+let capturer = Snapshotter(config: snapshotConfig)
 let engineInstance = SyncEngine(
     model: model,
     capturer: capturer,
@@ -151,6 +167,7 @@ if let onlyApps {
 }
 engineInstance.screenReader = mainScreenInfo
 engineInstance.indexGridSize = indexGrid
+engineInstance.slowCaptureThreshold = max(1.0, captureTime)
 model.gridSize = indexGrid
 engine = engineInstance
 

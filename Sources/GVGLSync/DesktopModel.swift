@@ -115,6 +115,7 @@ public final class DesktopModel: @unchecked Sendable {
                 relations: output.relations,
                 index: SpatialIndex.build(from: deduped, gridSize: gridSizeStorage),
                 cgWindowCount: output.cgWindowCount,
+                actionProbeFailures: output.actionProbeFailures,
                 axWindowCount: output.axWindowCount,
                 missingWindowTitles: output.missingWindowTitles
             )
@@ -131,6 +132,7 @@ public final class DesktopModel: @unchecked Sendable {
                 relations: finalOutput.relations,
                 index: SpatialIndex.build(from: stabilized, gridSize: gridSizeStorage),
                 cgWindowCount: finalOutput.cgWindowCount,
+                actionProbeFailures: finalOutput.actionProbeFailures,
                 axWindowCount: finalOutput.axWindowCount,
                 missingWindowTitles: finalOutput.missingWindowTitles
             )

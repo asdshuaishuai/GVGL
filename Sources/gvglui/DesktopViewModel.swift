@@ -1,8 +1,10 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import GVGLCore
 import GVGLQuery
+import GVGLAction
 
 /// Central observable state of the review console.
 @MainActor
@@ -19,7 +21,50 @@ final class DesktopViewModel: ObservableObject {
     @Published var lastInstruction: String?
     @Published var lastResult: QueryResult?
     @Published var lastParsed: ParsedInstruction?
-    @Published var executing = false
+    /// True while an action/transcript call is in flight (they block for up to
+    /// the verification window).
+    @Published var busy = false
+    /// Newest-first log of actions executed from the console. This is the
+    /// observation surface: method, whether the desktop changed, and whether
+    /// the change was verified.
+    @Published var actionLog: [ActionLogEntry] = []
+    /// Text of a window read through AX — the screenshot-free "what does it
+    /// say" panel.
+    @Published var transcript: String?
+    @Published var transcriptLabel: String?
+    @Published var axTrusted = AXIsProcessTrusted()
+
+    /// One executed action, as the console saw it.
+    struct ActionLogEntry: Identifiable {
+        let id = UUID()
+        let time: Date
+        let action: String
+        let target: String?
+        let method: String?
+        let changed: Bool
+        let verified: Bool
+        let latencyMS: Int
+        let errorCode: String?
+        let errorMessage: String?
+
+        var ok: Bool { errorCode == nil }
+
+        var detail: String {
+            if let errorCode {
+                return "\(errorCode): \(errorMessage ?? "")"
+            }
+            var parts: [String] = []
+            if let method { parts.append(method) }
+            parts.append(changed ? "已变化" : "无变化")
+            parts.append(verified ? "已验证" : "未验证")
+            parts.append("\(latencyMS)ms")
+            return parts.joined(separator: " · ")
+        }
+    }
+
+    /// The console never re-implements clicking: it drives the same executor
+    /// agents use, so what a human sees here is exactly what an agent gets.
+    private var executor: ActionExecutor
 
     /// One incremental frame change (from get_frame?since), newest first.
     /// Makes the event-driven engine observable: which apps changed, when.
@@ -43,7 +88,12 @@ final class DesktopViewModel: ObservableObject {
     private var lastVersion: UInt64?
 
     init() {
-        client = GVGLClient(socketPath: socketPath)
+        // Read the default once, before touching `self`: @Published's setter
+        // counts as a property access, and `executor` is not initialized yet.
+        let path = GVGLClient.defaultSocketPath
+        socketPath = path
+        client = GVGLClient(socketPath: path)
+        executor = ActionExecutor(options: ExecutorOptions(socketPath: path))
     }
 
     /// Embedded daemon helper: "GVGL Console.app/Contents/Resources/gvgl"
@@ -68,6 +118,8 @@ final class DesktopViewModel: ObservableObject {
         subscription?.cancel()
         daemonLaunchAttempted = false
         client = GVGLClient(socketPath: socketPath)
+        executor = ActionExecutor(options: ExecutorOptions(socketPath: socketPath))
+        axTrusted = AXIsProcessTrusted()
         connected = false
         errorMessage = nil
         refresh()
@@ -208,22 +260,148 @@ final class DesktopViewModel: ObservableObject {
         lastResult = QueryEngine.query(frame: frame, params: params)
     }
 
-    func executeBest() {
-        guard let result = lastResult, let best = result.best else { return }
-        executeClick(best.entity)
+    // MARK: - Actions (computer use)
+
+    func performPress(_ entity: Entity) {
+        runAction("press", target: entity) { [executor] in
+            try executor.press(.id(entity.id))
+        }
     }
 
-    func executeClick(_ entity: Entity) {
-        guard allowExecute, let frame else { return }
-        executing = true
-        defer { executing = false }
-        let point = QueryEngine.pixelCenter(of: entity, screen: frame.screen)
-        let position = CGPoint(x: point.x, y: point.y)
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: position, mouseButton: .left)?.post(tap: .cghidEventTap)
-        usleep(60_000)
-        CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: position, mouseButton: .left)?.post(tap: .cghidEventTap)
-        usleep(60_000)
-        CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: position, mouseButton: .left)?.post(tap: .cghidEventTap)
+    func performClick(_ entity: Entity) {
+        runAction("click", target: entity) { [executor] in
+            try executor.click(.id(entity.id))
+        }
+    }
+
+    func performType(_ text: String, into entity: Entity?) {
+        guard let entity else {
+            errorMessage = "先选中一个输入控件"
+            return
+        }
+        guard !text.isEmpty else {
+            errorMessage = "输入文本为空"
+            return
+        }
+        runAction("type", target: entity) { [executor] in
+            try executor.type(.id(entity.id), text: text)
+        }
+    }
+
+    func performKey(_ chord: String) {
+        guard !chord.isEmpty else {
+            errorMessage = "按键和弦为空"
+            return
+        }
+        runAction("key", target: nil) { [executor] in
+            try executor.sendKey(chord)
+        }
+    }
+
+    func performScroll(_ entity: Entity?, lines: Int32) {
+        guard let entity else {
+            errorMessage = "先选中一个可滚动区域"
+            return
+        }
+        runAction("scroll", target: entity) { [executor] in
+            try executor.scroll(.id(entity.id), lines: lines)
+        }
+    }
+
+    // MARK: - Transcript (read-only; never gated by the execute toggle)
+
+    func loadTranscriptForSelection() {
+        guard let entity = selectedEntity else {
+            errorMessage = "先在画布或左侧列表选中一个实体"
+            return
+        }
+        let windowID = entity.role == "AXWindow" ? entity.id : entity.windowID
+        loadTranscript(appKey: entity.appID, windowID: windowID,
+                       label: entityDisplayTitle(entity))
+    }
+
+    func loadTranscriptFrontmost() {
+        guard let frame else { return }
+        guard let appKey = frame.frontmostApp else {
+            errorMessage = "帧里没有前台 App 信息"
+            return
+        }
+        let name = frame.scene.first { $0.appKey == appKey }?.name ?? appKey
+        loadTranscript(appKey: appKey, windowID: nil, label: name)
+    }
+
+    private func loadTranscript(appKey: String, windowID: String?, label: String) {
+        busy = true
+        let executor = self.executor
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Result { try executor.transcript(appKey: appKey, windowID: windowID) }
+            }.value
+            self.busy = false
+            switch outcome {
+            case .success(let result):
+                if case .object(let object) = result.data,
+                   case .string(let text)? = object["text"] {
+                    self.transcript = text
+                    self.transcriptLabel = label
+                } else {
+                    self.transcript = nil
+                    self.errorMessage = "该窗口没有可读文本（AX 未暴露）"
+                }
+            case .failure(let error):
+                self.errorMessage = (error as? ActionFailure)?.error.message ?? "\(error)"
+            }
+        }
+    }
+
+    // MARK: - Action plumbing
+
+    private func runAction(_ label: String, target: Entity?,
+                           _ body: @escaping () throws -> ActionResult) {
+        guard allowExecute else {
+            errorMessage = "请在侧栏开启「允许执行动作」"
+            return
+        }
+        busy = true
+        Task {
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Result { try body() }
+            }.value
+            self.busy = false
+            self.record(outcome, label: label, target: target)
+        }
+    }
+
+    private func record(_ outcome: Result<ActionResult, Error>, label: String, target: Entity?) {
+        let entry: ActionLogEntry
+        switch outcome {
+        case .success(let result):
+            entry = ActionLogEntry(
+                time: Date(), action: label,
+                target: target.map(entityDisplayTitle) ?? result.target?.title,
+                method: result.method, changed: result.changed,
+                verified: result.verified, latencyMS: result.latencyMS,
+                errorCode: result.error?.code.rawValue,
+                errorMessage: result.error?.message
+            )
+            if let error = result.error {
+                errorMessage = "\(error.code.rawValue): \(error.message)"
+            }
+        case .failure(let error):
+            let failure = error as? ActionFailure
+            entry = ActionLogEntry(
+                time: Date(), action: label,
+                target: target.map(entityDisplayTitle),
+                method: nil, changed: false, verified: false, latencyMS: 0,
+                errorCode: failure?.error.code.rawValue ?? "internal_error",
+                errorMessage: failure?.error.message ?? "\(error)"
+            )
+            errorMessage = entry.detail
+        }
+        actionLog.insert(entry, at: 0)
+        if actionLog.count > 50 {
+            actionLog.removeLast(actionLog.count - 50)
+        }
     }
 
     func select(_ entityID: String?) {

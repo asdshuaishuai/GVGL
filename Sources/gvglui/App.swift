@@ -64,13 +64,16 @@ struct ContentView: View {
                                       selectedID: model.selectedID,
                                       onSelect: { model.select($0) })
                     if let selected = model.selectedEntity, let frame = model.frame {
-                        EntityDetailView(entity: selected, frame: frame,
+                        EntityDetailView(model: model, entity: selected, frame: frame,
                                          onClose: { model.select(nil) })
                     }
                 }
 
-                CommandPanelView(model: model)
-                    .frame(height: 210)
+                HSplitView {
+                    CommandPanelView(model: model)
+                    TranscriptView(model: model)
+                }
+                .frame(height: 240)
             }
             .padding(8)
         }

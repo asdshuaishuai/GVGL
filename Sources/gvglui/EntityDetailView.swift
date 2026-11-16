@@ -15,6 +15,7 @@ func entityDisplayTitle(_ e: Entity) -> String {
 /// V3 capture capabilities (value/state/subrole/zIndex/local space) are
 /// directly observable by a human tester.
 struct EntityDetailView: View {
+    @ObservedObject var model: DesktopViewModel
     let entity: Entity
     let frame: GVGLFrame
     let onClose: () -> Void
@@ -44,12 +45,25 @@ struct EntityDetailView: View {
                     let px = QueryEngine.pixelCenter(of: entity, screen: frame.screen)
                     row("像素中心", "(\(Int(px.x)), \(Int(px.y)))", mono: true)
                 }
-                if !entity.actions.isEmpty {
-                    group("操作") {
+                group("操作") {
+                    if entity.actions.isEmpty {
+                        Text("（该元素未暴露 AX 动作）")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    } else {
                         Text(entity.actions.joined(separator: " · "))
                             .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
                     }
+                    HStack(spacing: 6) {
+                        Button("语义按下") { model.performPress(entity) }
+                            .disabled(!model.allowExecute)
+                        Button("指针点击") { model.performClick(entity) }
+                            .disabled(!model.allowExecute)
+                        Button("读窗口文本") { model.loadTranscriptForSelection() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
                 }
                 hierarchySection
             }

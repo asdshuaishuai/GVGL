@@ -69,6 +69,9 @@ public final class Pipeline: @unchecked Sendable {
         "AXMenuBar", "AXMenuBarItem",
         // 状态与布局调节
         "AXProgressIndicator", "AXSplitter",
+        // 滚动条（V6）：让"这块区域能滚动 / 现在滚到哪"可观测。
+        // 动作层据此判断滚动是否还可能有效，agent 也不必凭空尝试。
+        "AXScrollBar",
     ]
 
     public init(

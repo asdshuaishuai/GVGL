@@ -492,21 +492,7 @@ public final class Snapshotter: @unchecked Sendable {
     /// cap it: terminal scrollbacks and document text areas can otherwise
     /// pump megabytes into every frame.
     static func valueString(from value: AnyObject, cap: Int = 512) -> String? {
-        // CFBoolean must be tested before NSNumber (it bridges as NSNumber).
-        if CFGetTypeID(value) == CFBooleanGetTypeID() {
-            return (value as! Bool) ? "true" : "false"
-        }
-        if let string = value as? String {
-            return string.isEmpty ? nil : String(string.prefix(cap))
-        }
-        if let attributed = value as? NSAttributedString {
-            let string = attributed.string
-            return string.isEmpty ? nil : String(string.prefix(cap))
-        }
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-        return nil
+        AXValueCoercion.string(from: value, cap: cap)
     }
 
     private func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {

@@ -157,6 +157,11 @@ public extension PipelineOutput {
             index: SpatialIndex.build(from: remappedEntities, gridSize: index.gridSize),
             // CG cross-check stats survive re-keying (previously dropped).
             cgWindowCount: cgWindowCount,
+            // Diagnostics are part of the output contract: dropping them on a
+            // remap silently turned "actions may be incomplete" back into
+            // "actions are fine", which is exactly the invisible failure the
+            // field exists to prevent.
+            actionProbeFailures: actionProbeFailures,
             axWindowCount: axWindowCount,
             missingWindowTitles: missingWindowTitles
         )

@@ -8,6 +8,8 @@ struct CommandPanelView: View {
     @ObservedObject var model: DesktopViewModel
     @State private var instruction: String = "点击 登录 按钮"
     @State private var parseError: String?
+    @State private var inputText: String = ""
+    @State private var chord: String = "cmd+s"
 
     private let examples = [
         "点击 登录 按钮",
@@ -34,8 +36,10 @@ struct CommandPanelView: View {
                 }
             }
 
-            if let error = parseError {
-                Text(error).font(.caption).foregroundStyle(.red)
+            actionBar
+
+            if let error = parseError ?? model.errorMessage {
+                Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
             }
 
             if let parsed = model.lastParsed {
@@ -77,6 +81,50 @@ struct CommandPanelView: View {
         }
         .padding(10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Direct action surface: the same primitives an agent uses, with the
+    /// executor's verdict shown inline (method · changed · verified · latency).
+    private var actionBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "cursorarrow.rays").foregroundStyle(.secondary)
+            Button("语义按下") { withSelection { model.performPress($0) } }
+                .disabled(!model.allowExecute)
+            Button("指针点击") { withSelection { model.performClick($0) } }
+                .disabled(!model.allowExecute)
+            TextField("输入文本", text: $inputText)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 140)
+            Button("输入") { model.performType(inputText, into: model.selectedEntity) }
+                .disabled(!model.allowExecute)
+            TextField("按键", text: $chord)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 70)
+            Button("发送") { model.performKey(chord) }
+                .disabled(!model.allowExecute)
+            Button("滚动↓") { model.performScroll(model.selectedEntity, lines: -5) }
+                .disabled(!model.allowExecute)
+            // Reading is perception, not action: never gated by the toggle.
+            Button("读窗口文本") { model.loadTranscriptForSelection() }
+            if model.busy { ProgressView().controlSize(.small) }
+            Spacer()
+            if let last = model.actionLog.first {
+                Text("\(last.action) · \(last.detail)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(last.ok ? (last.verified ? Color.green : Color.secondary) : Color.red)
+                    .lineLimit(1)
+            }
+        }
+        .controlSize(.small)
+        .buttonStyle(.bordered)
+    }
+
+    private func withSelection(_ body: (Entity) -> Void) {
+        guard let entity = model.selectedEntity else {
+            parseError = "先在画布或左侧列表选中一个实体"
+            return
+        }
+        body(entity)
     }
 
     private func run() {
@@ -124,14 +172,14 @@ struct CommandPanelView: View {
             .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Button("定位") { model.select(e.id) }
-                Button("点击") {
-                    guard model.allowExecute else {
-                        parseError = "请在侧栏开启「允许执行点击」"
-                        return
-                    }
-                    model.executeClick(e)
+                Button("按下") { model.performPress(e) }
+                    .disabled(!model.allowExecute)
+                Button("点击") { model.performClick(e) }
+                    .disabled(!model.allowExecute)
+                Button("读窗口") {
+                    model.select(e.id)
+                    model.loadTranscriptForSelection()
                 }
-                .disabled(!model.allowExecute)
             }
             .buttonStyle(.bordered)
             .controlSize(.mini)

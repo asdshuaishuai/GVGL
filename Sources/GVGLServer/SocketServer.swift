@@ -437,11 +437,27 @@ public final class SocketServer: @unchecked Sendable {
         }
     }
 
-    private static func errorResponse(_ code: String, _ message: String) -> String {
-        let body = """
-        {"error":{"code":"\(code)","message":"\(message)"}}
-        """
-        return body
+    /// Error responses go through JSONEncoder rather than string
+    /// interpolation: the message often carries a Swift `DecodingError`
+    /// description, which contains quotes and backslashes. Interpolated, that
+    /// produced an *invalid JSON line* for the most common client mistake
+    /// (a request missing "method"), so clients failed to parse the very
+    /// response meant to explain the failure.
+    struct ErrorPayload: Encodable {
+        struct Body: Encodable {
+            var code: String
+            var message: String
+        }
+        var error: Body
+    }
+
+    static func errorResponse(_ code: String, _ message: String) -> String {
+        let payload = ErrorPayload(error: .init(code: code, message: message))
+        guard let data = try? JSONEncoder.gvgl.encode(payload),
+              let text = String(data: data, encoding: .utf8) else {
+            return #"{"error":{"code":"internal_error","message":"error serialization failed"}}"#
+        }
+        return text
     }
 
     private struct StatusPayload: Codable {

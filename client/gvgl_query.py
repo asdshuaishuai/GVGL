@@ -323,8 +323,7 @@ def query(client: GVGLClient, role: str | None = None, label: str | None = None,
         region_ids = frame["index"]["byRegion"].get(region, [])
         region_set = set(region_ids)
         candidates = [e for e in candidates if e["id"] in region_set]
-    elif cell:
-        # Grid pre-filter. This reads index.byGrid, which only exists when the
+    elif cell:        # Grid pre-filter. This reads index.byGrid, which only exists when the
         # daemon was started with a non-zero --index-grid. Under the default
         # (linear) index byGrid is empty, so a cell query used to return
         # `not_found` — silently, as if the cell genuinely held nothing. The
@@ -348,6 +347,13 @@ def query(client: GVGLClient, role: str | None = None, label: str | None = None,
             )
         grid_ids = set(by_grid[cell])
         candidates = [e for e in candidates if e["id"] in grid_ids]
+    if role:
+        # Role is a filter, not just a score term (design §6.1 Step 2) — see
+        # the Swift QueryEngine for the same rule and the same reason: an
+        # action addressed to "the AXTextField" must never land on a StaticText
+        # that merely scored better. Compatible roles stay reachable.
+        allowed = COMPATIBLE_ROLES.get(role, {role})
+        candidates = [e for e in candidates if e.get("role") in allowed]
     if display is not None:
         # V5: physical-display filter (CGDirectDisplayID, see `map` output) —
         # pairs with --region to target one screen's quadrant.

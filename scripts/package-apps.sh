@@ -48,6 +48,7 @@ APP="$DIST/GVGL.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/gvglui "$APP/Contents/MacOS/gvglui"
 cp .build/release/gvgl "$APP/Contents/Resources/gvgl"   # 内嵌守护进程助手
+cp .build/release/gvglact "$APP/Contents/Resources/gvglact"   # computer-use 执行器
 cp "$DIST/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 write_plist "$APP" gvglui com.gvgl.app GVGL "GVGL"
 

@@ -56,6 +56,12 @@ public final class SyncEngine: @unchecked Sendable {
     public var minCaptureInterval: TimeInterval = 0.15
     /// After an error/slow capture, back off this long before capturing again.
     public var cooldownOnError: TimeInterval = 30
+    /// A capture slower than this counts as "slow" and triggers the cooldown.
+    /// It must follow the configured capture budget: raising
+    /// `--node-budget/--capture-time` for a heavy app otherwise made every
+    /// capture exceed the fixed 1s threshold, cooling the app down for 30s
+    /// after each success and leaving the model permanently stale.
+    public var slowCaptureThreshold: TimeInterval = 1.0
     /// Max apps re-captured per reconciler tick (spike smoothing floor).
     public var reconcileBatch: Int = 3
     /// Target wall-clock for one full reconciliation sweep over all monitored
@@ -450,7 +456,7 @@ public final class SyncEngine: @unchecked Sendable {
             return
         }
         lastCaptured[info.appKey] = now
-        if snapshot.error != nil || snapshot.elapsed >= 1.0 {
+        if snapshot.error != nil || snapshot.elapsed >= slowCaptureThreshold {
             // Unresponsive or erroring app: back off so we don't hammer it.
             cooldownUntil[info.appKey] = now.addingTimeInterval(cooldownOnError)
         }
@@ -558,6 +564,7 @@ public final class SyncEngine: @unchecked Sendable {
             bundleID: info.bundleID, name: info.name,
             status: .warming, capturedAt: now, entityCount: 0,
             cgWindowCount: remapped.cgWindowCount > 0 ? remapped.cgWindowCount : nil,
+            actionProbeFailures: remapped.actionProbeFailures > 0 ? remapped.actionProbeFailures : nil,
             axWindowCount: remapped.axWindowCount > 0 ? remapped.axWindowCount : nil,
             missingWindowTitles: remapped.missingWindowTitles.isEmpty ? nil : remapped.missingWindowTitles
         )

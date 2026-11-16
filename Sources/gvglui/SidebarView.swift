@@ -24,8 +24,15 @@ struct SidebarView: View {
                         .buttonStyle(.borderedProminent)
                 }
                 Toggle("自动跟随", isOn: $model.autoWatch)
-                Toggle("允许执行点击", isOn: $model.allowExecute)
-                    .help("开启后可在结果面板直接点击真实桌面")
+                Toggle("允许执行动作", isOn: $model.allowExecute)
+                    .help("开启后可用同一执行器按下/点击/输入/滚动真实桌面；读取文本始终可用")
+                HStack(spacing: 6) {
+                    Image(systemName: model.axTrusted ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                        .foregroundStyle(model.axTrusted ? Color.green : Color.orange)
+                    Text(model.axTrusted ? "辅助功能权限已授予" : "辅助功能权限未授予（动作会被拒绝）")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Button("刷新") { model.refresh() }
                     .buttonStyle(.bordered)
             }
@@ -81,6 +88,41 @@ struct SidebarView: View {
                              : event.changedApps.map { appName(for: $0) }.joined(separator: ", "))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+
+            Section("动作日志 (\(model.actionLog.count))") {
+                if model.actionLog.isEmpty {
+                    Text("执行的动作会在这里留下痕迹：方法 / 是否变化 / 是否验证。")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                ForEach(model.actionLog.prefix(12)) { entry in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(entry.time, format: .dateTime.hour().minute().second())
+                            Text(entry.action)
+                                .font(.caption.weight(.semibold))
+                            if let target = entry.target {
+                                Text(target).lineLimit(1)
+                            }
+                            Spacer()
+                            if entry.ok {
+                                Text(entry.changed ? "变化" : "无变化")
+                                    .foregroundStyle(entry.changed ? Color.blue : Color.secondary)
+                                Text(entry.verified ? "已验证" : "未验证")
+                                    .foregroundStyle(entry.verified ? Color.green : Color.orange)
+                            } else {
+                                Text("失败").foregroundStyle(Color.red)
+                            }
+                        }
+                        .font(.caption2.monospacedDigit())
+                        Text(entry.detail)
+                            .font(.caption2)
+                            .foregroundStyle(entry.ok ? Color.secondary : Color.red)
                             .lineLimit(2)
                     }
                     .padding(.vertical, 1)

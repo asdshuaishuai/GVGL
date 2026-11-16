@@ -117,6 +117,50 @@ python3 scripts/agent_smoke.py --socket /tmp/gvgl-smoke.sock
 
 `--dry-run` 只定位与校验守卫，不点击。
 
+## 动作层（零截图）门禁
+
+两件事必须同时成立：动作能闭环，且代码里没有任何像素捕获。
+
+```bash
+swift test --filter GVGLActionTests        # ID 文法 / 键位 / 结果编码
+scripts/audit_no_screenshot.sh             # 截图/OCR API 静态扫描
+.build/release/gvgl --socket /tmp/gvgl-act.sock &
+python3 scripts/act_smoke.py --socket /tmp/gvgl-act.sock
+```
+
+`act_smoke.py` 在临时 dialog 上跑完 读文本 → 定位 → 输入 → 回读 → AXPress →
+进程退出；其中 `press` 断言 `method == "ax_press"`，即走语义动作而不是坐标点击。
+
+手动验收清单（改动执行层后）：
+- `press` 用 `ax_*` 方法且 `after.element.exists == false`（对话框关闭）；
+- `type` 的 `verified == true` 且回读值等于输入；
+- 目标被遮挡/过时时返回 `target_obscured` / `stale_reference`，绝不盲点；
+- `--dry-run` 不激活 App、不发事件、不改焦点。
+
+审查台（GUI）也可以用它自己的方式验收——不靠人眼、不靠截图：
+
+```bash
+GVGL_SOCKET=/tmp/gvgl-ui.sock .build/release/gvglui &
+gvglact transcript --app pid:<gvglui pid>       # 读回面板文本（应含动作条/日志/窗口文本）
+gvglact press --app pid:<gvglui pid> --role AXButton --label "前台 App"
+gvglact transcript --app pid:<gvglui pid>       # 窗口文本面板应已由占位符变为真实内容
+```
+
+滚动的真机验证用一个一次性窗口，避免动到用户的浏览位置：
+
+```bash
+swiftc -O -o /tmp/gvgl-action-harness scripts/action_harness.swift
+/tmp/gvgl-action-harness &
+.build/release/gvglact find --app pid:NNN --role AXScrollBar
+.build/release/gvglact scroll --id <scrollbar> --down 10   # 0 → ~0.09
+.build/release/gvglact scroll --id <scrollbar> --to top    # 回到 0
+
+# 拖拽：滑块 → 同行按钮
+.build/release/gvglact find --app pid:NNN --role AXSlider
+.build/release/gvglact find --app pid:NNN --role AXButton
+.build/release/gvglact drag --from <slider> --to <button>  # AXValue 0 → 1
+```
+
 ## 负载 / 健壮性检查
 
 单测从不同时开超过个位数连接——守护进程曾经**带着全绿的测试**上线了一个可用性

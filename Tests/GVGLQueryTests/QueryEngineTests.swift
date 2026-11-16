@@ -53,6 +53,30 @@ final class QueryEngineTests: XCTestCase {
                                  refRegion: ref?.geometry.region.rawValue, byID: byID)
     }
 
+    func testRoleIsAHardFilter() {
+        let button = entity("b", role: "AXButton", title: "登录")
+        let text = entity("t", role: "AXStaticText", title: "登录")
+        let f = frame([button, text])
+
+        // A role query must not return a different role just because it scores
+        // better on size/topology: the executor presses what it is given.
+        let buttons = QueryEngine.query(frame: f, params: QueryParams(role: "AXButton", label: "登录"))
+        XCTAssertEqual(buttons.ranked.map(\.entity.role), ["AXButton"])
+
+        let texts = QueryEngine.query(frame: f, params: QueryParams(role: "AXStaticText", label: "登录"))
+        XCTAssertEqual(texts.ranked.map(\.entity.role), ["AXStaticText"])
+
+        // Compatible roles remain reachable (Button ↔ MenuItem).
+        let menu = entity("m", role: "AXMenuItem", title: "登录")
+        let compat = QueryEngine.query(frame: frame([menu]),
+                                       params: QueryParams(role: "AXButton", label: "登录"))
+        XCTAssertEqual(compat.ranked.map(\.entity.role), ["AXMenuItem"])
+
+        // Nothing of that role → not_found, not a confident wrong answer.
+        let absent = QueryEngine.query(frame: f, params: QueryParams(role: "AXScrollBar"))
+        XCTAssertEqual(absent.status, .notFound)
+    }
+
     func testSemanticScoring() {
         let e = entity("a", title: "登录按钮")
         XCTAssertEqual(score(e, QueryParams(label: "登录按钮")).breakdown["semantic"] ?? -1, 1.0)

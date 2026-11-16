@@ -16,14 +16,24 @@ swift build -c release
 open /Applications/GVGL.app
 ```
 
-审查台能力观测面：桌面画布（前台窗口标记/菜单栏色带/焦点描边）、实体详情面板
-（value/subrole/focused/zIndex/三层几何/关系摘要）、侧栏事件流（帧变化与变更
-App 实时可见）、指令面板（NL 指令 → 五维评分 → 定位/点击）。
+审查台能力观测面：
+
+- 桌面画布（前台窗口标记 / 菜单栏色带 / 焦点描边）与实体详情（value/subrole/focused/zIndex/四层几何/层次链）
+- 指令面板（NL 指令 → 五维评分 → 定位）+ 动作条（语义按下 / 指针点击 / 输入 / 按键 / 滚动 / 读窗口文本）
+- 侧栏事件流（帧变化）与**动作日志**（方法 / 是否变化 / 是否验证 / 耗时 / 稳定错误码）
+- **窗口文本面板**：AX 树文本，替代截图（读选中窗口或前台 App）
+- 与 Agent 共用同一个执行器：控制台不自己实现点击；`允许执行动作` 是唯一闸门（读取文本不受限）
+
+重 App（SwiftUI/Electron）可能超出默认快照预算，启动守护进程时可调：
+
+```bash
+.build/release/gvgl --node-budget 20000 --capture-time 12
+```
 
 ## 构建
 
 ```bash
-swift build -c release        # 产物 .build/release/{gvgl, gvglui}
+swift build -c release        # 产物 .build/release/{gvgl, gvglui, gvglact}
 scripts/package-apps.sh --install   # 打包并安装 /Applications/GVGL.app
 ```
 
@@ -66,6 +76,37 @@ python3 client/gvgl_query.py watch --interval 0.5            # 轮询观察 vers
 `--cliclick` 打印可执行命令，`--execute` 直接执行（需 `brew install cliclick`）。
 `socket` 可用 `--socket PATH` 或环境变量 `GVGL_SOCKET` 指定。
 
+## Computer Use（无截图执行）
+
+守护进程仍然**完全只读**；动作由独立执行器 `gvglact` 完成：读帧定位 → AX 语义动作
+（失败时回退到经过命中测试的指针事件）→ 回读元素状态验证。**全链路不截图、不 OCR。**
+
+```bash
+gvglact status                                       # AX 权限 + 守护进程状态
+gvglact transcript --app pid:123                     # 把一个窗口读成文本（替代截图）
+gvglact find --app pid:123 --role AXButton --label 登录
+gvglact press --id pid:123:0-2                       # AXPress（不是坐标点击）
+gvglact type  --id pid:123:0-1 --text "hello 你好"    # AXValue → 粘贴 → Unicode 按键
+gvglact key   --chord "cmd+s" --app pid:123
+gvglact scroll --id pid:123:0-5 --down 5
+gvglact menu  --app pid:123 --path "文件/新建窗口"
+gvglact app   activate --target com.apple.finder
+gvglact wait  --since 120 --timeout 3
+```
+
+- 输出恒为单行 JSON（`--pretty` 美化），退出码 `0` 成功 / `1` 失败 / `2` 用法错误；
+  失败带稳定错误码（`stale_reference` / `target_obscured` / `ambiguous_match` …）。
+- `changed` 表示桌面确实有反应，`verified` 表示反应符合该动作的预期——两者分开，
+  因为"点了但没变化"不是失败，"变化来自别处"也不等于成功。
+- 安全护栏：点击前用 `AXUIElementCopyElementAtPosition` 命中测试，目标被遮挡直接
+  拒绝；`--dry-run` 只解析与校验、不发任何事件；`--allow-app` 限定作用 App；
+  安全输入框默认拒绝输入。
+- 权限模型：读帧只需 socket；**执行需要调用方进程具备辅助功能权限**（与守护进程
+  的授权相互独立，最小权限）。
+- 零截图是机械约束：`scripts/audit_no_screenshot.sh` 扫描源码中的截图/OCR API。
+- 端到端验证：`python3 scripts/act_smoke.py --socket /tmp/gvgl-act.sock`（临时
+  dialog 上跑完 读文本→输入→回读→AXPress→进程退出，不截一张图）。
+
 ## 协议
 
 Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几何按需计算）：
@@ -83,7 +124,7 @@ Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几
 ## 测试
 
 ```bash
-swift test        # 124 个单测：几何/显示空间/拓扑/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）
+swift test        # 167 个单测：几何/显示空间/拓扑/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）+ 动作层（ID 文法/键位/结果编码/transcript 标签）
 ```
 
 ## 几何审计（真机不变量检查）

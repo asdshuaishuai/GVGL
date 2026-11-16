@@ -13,6 +13,7 @@ GVGL 不参与执行路径。
 swift build -c release
 .build/release/gvgl &                    # 守护进程（默认 socket ~/.gvgl/gvgl.sock）
 .build/release/gvglui                    # SwiftUI 审查台（可视化 + 指令模拟）
+.build/release/gvglact status            # computer-use 执行器（需辅助功能权限）
 python3 client/gvgl_query.py status      # CLI 客户端
 ```
 
@@ -25,6 +26,7 @@ python3 client/gvgl_query.py status      # CLI 客户端
 | [协议](Protocol.md) | UDS/NDJSON、get_frame/since/subscribe、帧结构、失败模式 |
 | [查询与评分](Query.md) | 查询流程、五维评分算法、置信度门限、指令解析 |
 | [客户端](Client.md) | gvgl_query.py 与 gvglui 审查台用法 |
+| [动作层](Act.md) | gvglact：感知→动作→验证，全链路零截图 |
 | [运维](Ops.md) | 构建、launchd 常驻、TCC 权限、性能指标 |
 | [路线图](Roadmap.md) | V1.6/V2 状态、偏离审计索引、已知限制 |
 | [测试](Testing.md) | 单测清单、真机验证方法 |
@@ -48,7 +50,10 @@ Unix Socket（NDJSON）
    │  get_frame / get_frame?since / subscribe / get_status
    ▼
 消费方：gvglui 审查台 / gvgl_query.py / 任意 Agent
-   │  本地评分 → 像素坐标 → cliclick / CGEvent（由调用方执行）
+   │  本地评分 → 定位（角色硬过滤）
+   ▼
+gvglact（独立执行器，零截图）
+   │  AX 语义动作 / 合成事件 → 回读元素 + 轮询 version 验证
    ▼
 真实桌面（操作生效）
 ```

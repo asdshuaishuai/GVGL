@@ -109,6 +109,16 @@ public enum QueryEngine {
             let regionSet = Set(frame.index.byRegion[region] ?? [])
             candidates = candidates.filter { regionSet.contains($0.id) }
         }
+        // Role is a filter, not just a score term (design doc §6.1 Step 2).
+        // Soft-scoring meant `--role AXButton` happily returned a StaticText
+        // whose label matched better, which is fine for "find something" and
+        // wrong for "act on this kind of control" — the executor would press
+        // whatever ranked first. Compatible roles stay allowed so the
+        // Button↔MenuItem and TextField↔TextArea equivalences still work.
+        if let role = params.role {
+            let allowed = compatibleRoles[role] ?? [role]
+            candidates = candidates.filter { allowed.contains($0.role) }
+        }
         if let display = params.display {
             // V5: physical-display filter — quadrant/region queries pair with
             // this to target one screen ("右上角的那块屏").

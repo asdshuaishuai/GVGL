@@ -60,8 +60,28 @@ final class DesktopModelTests: XCTestCase {
         XCTAssertEqual(frame.allEntities[0].pid, 1)
     }
 
-    func testFilterApp() {
+    /// Model-boundary dedup rebuilds PipelineOutput; it must carry the
+    /// diagnostics forward. Dropping them here would make `actions` look
+    /// trustworthy exactly when a capture path was already suspicious.
+    func testDedupPathPreservesActionProbeDiagnostics() {
         let model = DesktopModel()
+        let entity = Entity(
+            id: "dup", role: "AXButton", title: "登录", detail: nil, identifier: nil,
+            enabled: true, actions: [],
+            axParentID: nil, entityParentID: nil, windowID: nil,
+            appID: "pid:1", pid: 1,
+            geometry: Geometry(screen: .unit, window: .unit)
+        )
+        let output = PipelineOutput(
+            entities: [entity, entity], relations: [], index: SpatialIndex.build(from: [entity]),
+            cgWindowCount: 1, actionProbeFailures: 4, axWindowCount: 1
+        )
+        model.upsert(appKey: "pid:1", output: output, meta: meta("pid:1", 1, "A"))
+        XCTAssertEqual(model.output(appKey: "pid:1")?.entities.count, 1)
+        XCTAssertEqual(model.output(appKey: "pid:1")?.actionProbeFailures, 4)
+    }
+
+    func testFilterApp() {        let model = DesktopModel()
         model.upsert(appKey: "pid:1", output: output("e1"), meta: meta("pid:1", 1, "A"))
         model.upsert(appKey: "pid:2", output: output("e2"), meta: meta("pid:2", 2, "B"))
 

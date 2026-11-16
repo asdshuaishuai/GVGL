@@ -47,6 +47,7 @@
 | 25 | §6.1 显示器枚举变化在下一校准 tick 生效 | V3 改为 CGDisplayRegisterReconfigurationCallback 事件驱动：立即刷新屏幕几何并标记全部 App 重捕（beginConfiguration 阶段忽略） | ✅ 用户批准（V3） |
 | 26 | §2.2 Local Space 预留（默认 unit，元素自身坐标系） | V3 落地为**父容器归一化 rect**（最近实体祖先坐标系；无实体祖先保持 unit；父子同空间相除，分辨率抵消）。原始"元素内部点位"语义不需存储——客户端用 screen 原点 + 分率即可表达 | ✅ 用户批准（V3，G6） |
 | 27 | §3 帧 = 平铺 entities[] + relations[] | **V4 层次场景图**：帧改携 `scene[]`（每 App 一根：窗口/菜单栏/孤儿为顶层，Entity 递归 children，自然 AX 序）；inside/contains 由树结构表达；方向/near/aligned **不再随帧序列化**，客户端按几何规则对候选按需计算（语义不变，且跨窗口对首次可用、无 500/5000 截断——#5 的上限问题随之消失）；`get_frame?depth=N` 按层剪枝（prunedChildCount 标注），概览帧体积大幅收敛（实测 Finder 823 实体 → depth=1 仅 143 根） | ✅ 用户批准（V4 重设计主线） |
+| 28 | §1.5「侧挂不居中：执行由调用方负责」 | V6 落地为**独立执行器** `gvglact`（AX 语义动作 + 命中测试后的合成事件 + 回读验证）；守护进程仍为零写调用。执行能力在产品内闭环，但"只读 daemon / 执行在调用方"的边界不变 | ✅ 用户要求（computer use），边界不变 |
 
 ## 1. 设计铁律
 
@@ -58,6 +59,9 @@
 | 无系统修改 | 不修改窗口、不注入事件、不改变焦点 |
 | 模型驻留，帧是视图 | 虚拟桌面模型常驻内存；`get_frame` 只读物化模型，不做 AX 调用 |
 | 侧挂不居中 | 执行操作由调用方负责（`client/gvgl_query.py --cliclick`） |
+
+以上为**守护进程**铁律。V6 的执行器 `gvglact` 是独立进程（§V6-1），它注入事件、
+改变焦点，但守护进程本身仍零写调用——两条边界不能混为一谈。
 
 ## 2. 坐标系（M0 实测锁定）
 
@@ -328,22 +332,25 @@ Sources/GVGLCore/   流水线（纯逻辑，合成 fixture 可单测）
   Models.swift        Entity(递归 children)/SceneApp/GVGLFrame/Index(+Grid)/DisplayInfo/AppSnapshot
   SceneTree.swift     V4 场景树构建/拍平/自然 AX 序/depth 剪枝
   AXSnapshot.swift    DFS 快照 + 批量属性 + 预算/墙钟 + 子树快照 + 菜单栏第二根 + CG 探针接线
+  AXValueCoercion.swift  AXValue 统一强转（感知与动作验证共用，避免"同一字段两种读法"）
   CGWindowProbe.swift CGWindowList 第二数据源（窗口级交叉校验，V2-3）
   Geometry.swift      坐标转换（M0 锁定版 + 多屏）
-  Topology.swift      关系 + R12 裁剪 + 上限
-  SpatialIndex.swift  索引 + GridIndexBuilder/LinearScanIndexBuilder（V2-1 可替换缝）
-  Pipeline.swift      快照 → 实体/关系/索引（显示器解析 + CG 缺失窗口检测）
+  Topology.swift      关系 + R12 裁剪 + 上限（V4 起仅测试/直接消费者使用）
+  Pipeline.swift      快照 → 实体/索引（显示器解析 + z-order + CG 缺失窗口检测）
   IDStabilizer.swift  跨重建 ID 稳定 + PipelineOutput.remapped
+  （SpatialIndex 类型与 builder 位于 Models.swift）
 Sources/GVGLSync/   半同步引擎
   DesktopModel.swift  常驻模型 + version + 变更日志 + 帧物化
-  ObserverRegistry.swift  每 App AXObserver（专用 RunLoop 线程，回调携带窗口 rect）
+  ObserverRegistry.swift  每 App AXObserver（专用 RunLoop 线程）
   WorkspaceTracker.swift  NSWorkspace 启停跟踪
   SyncEngine.swift    去抖/增量同步/子树重捕/Reconciler/节流/白名单/屏幕刷新
 Sources/GVGLServer/  UDS 服务（get_frame/since/subscribe 推送/get_status）
 Sources/gvgl/       守护进程入口（参数/信号/显示器枚举）
+Sources/GVGLAction/ computer-use 执行层（元素解析/语义动作/合成事件/命中测试/回读验证）
+Sources/gvglact/    执行器 CLI（press/click/type/key/scroll/drag/menu/transcript/app/…）
 client/gvgl_query.py 参考客户端（status/frame/list/query/subscribe/watch + --json/--cell）
-scripts/             launchd 安装/卸载脚本（V2-5）+ audit_geometry.py 真机几何审计（V4.1）
-Tests/              124 个单测（不依赖真实 AX）
+scripts/             launchd 安装/卸载 + audit_geometry.py + audit_no_screenshot.sh + act_smoke.py
+Tests/              167 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签）
 ```
 
 ## 11. 运行参数
@@ -354,6 +361,8 @@ Tests/              124 个单测（不依赖真实 AX）
 | `--reconcile SECONDS` | 校准周期，默认 3s |
 | `--only-apps b1,b2` | bundle id 白名单 |
 | `--index-grid N` | 帧索引网格（默认 0 = 线性扫描，原始帧结构；N = N×N 网格） |
+| `--node-budget N` | 单 App 快照节点预算，默认 3000；重 App（SwiftUI/Electron）可调大，代价是采集更慢 |
+| `--capture-time S` | 单 App 快照墙钟上限，默认 1.0s；慢采集冷却阈值跟随此值（否则调大预算反而每采集一次冷却 30s） |
 | `--cg-check` | CGWindow 交叉校验诊断（cgWindowCount/missingWindowTitles）；Z-order 排名自 V3 起常开、与此开关无关 |
 | `--verbose` | 连接日志 |
 | `--version` / `--print-socket` | 辅助 |
@@ -389,7 +398,7 @@ Tests/              124 个单测（不依赖真实 AX）
 | 1 | **SUB 推送订阅 + since 增量拉取**：`subscribe` 长连接按版本推送 `{event,version,changed_apps}`；`get_frame?since=N` 无变化返回 no_change，有变化返回完整帧 + 变更 App 列表 | ✅ 已实现 |
 | 2 | **per-window 子树增量重捕**：窗口级通知只重捕该窗口子树并与既有实体合并（未变化窗口字节级零变化）；匹配失败自动回退全量重捕 | ✅ 已实现 |
 | 3 | **多屏投影** | ⏸ 已收敛：原始文档 §1.3 明确 V1 只支持主屏 → 坐标保持主屏归一化（原始公式）；`screen.displays[]`/`displayID` 仅作信息元数据。真正的每屏投影若要做，需用户决策升级基线 |
-| 4 | **语义操作桥（可选）**：`act`（AXPress 等） | ⏸ 待决策（需突破"只读"铁律）。**非突破部分已满足**：`entity.id` 即 element_path（"pid:NNN:路径"），调用方可自行构造 AX 引用执行操作 |
+| 4 | **语义操作桥**：`act`（AXPress 等） | ✅ V6 以**独立执行器**落地（`gvglact`，见 §V6）：守护进程保持只读，动作由调用方一侧完成；`entity.id` 即 element_path 仍可直接构造 AX 引用 |
 
 ### V2（中期）
 
@@ -474,6 +483,146 @@ App/窗口（appKey/windowID）× 什么角色/文本（role/label）"** 四级�
 
 掩码订阅语义注意：被掩码滤掉的版本号不会推送，`since` 增量拉取仍返回完整帧（掩码只影响
 推送，不影响数据完整性）；`sys` 桶（frontmost 变化）需显式加入掩码才会收到。
+
+### V6（computer use 执行层，2026-11-14）
+
+目标从"可查询的几何模型"推进到"**可感知、可操作、可验证**的 computer-use 基座"。
+硬约束：尽可能不截图。结论：**AX 树 + 合成事件足以覆盖标准动作集**，全程不需要
+任何像素捕获或 OCR。
+
+#### V6-1 铁律边界：动作不在守护进程里
+
+守护进程保持完全只读（§1），动作由新模块 `GVGLAction` + 可执行 `gvglact` 完成。
+这不是洁癖，是三个工程理由：
+
+- **权限分离**：读帧只需 UDS，任何无辅助功能权限的进程都能安全消费帧；执行才
+  需要辅助功能权限，由调用方进程承担（最小权限）。
+- **可审计**：守护进程仍可用"零写调用"证明只读性；动作路径的爆炸半径被限制在
+  一个短命进程里。
+- **事故隔离**：执行器崩溃不会带走常驻模型。
+
+#### V6-2 感知（零截图）
+
+| 能力 | 实现 |
+| :--- | :--- |
+| 定位 | 帧 + 五维评分；**角色改为硬过滤**（§6.1 Step 2 落地，兼容角色仍可达） |
+| 读窗口 | `transcript`：场景树自然 AX 序拼接 title/value/placeholder/detail，带角色标签；替代截图/OCR |
+| 控件标签 | 标签优先级 title → placeholder → detail（SwiftUI/Electron 把按钮文案放 AXDescription）；value 作为内容追加（复选框显示"允许执行动作: 0"而不是裸 "0"） |
+| 读长文本 | `text`：按需读单元素完整 AXValue（不进帧，避免载荷膨胀；默认上限 8000 字符） |
+| 可操作性 | `Entity.actions`（AX Action API）+ `actionProbeFailures` 诊断；重映射/去重路径已修复为保留该诊断 |
+| 滚动性 | `AXScrollBar` 入白名单；可滚动位置直接读 AXValue（实测 0 → 0.089 → 1.0）；覆盖式滚动条不暴露时退化为版本/状态变化 |
+
+#### V6-3 动作原语
+
+| verb | 实现路径 | 说明 |
+| :--- | :--- | :--- |
+| `press` | `AXPress` → `AXConfirm` → `AXPick` → `AXOpen` → `AXShowMenu` | 无可用 AX 动作时回退为命中测试后的点击，并显式告警 |
+| `click` | CGEvent 左/右/中键，`--count` 支持双击/三击（clickState 字段） | 点击点取**当前** AX 几何中心，不是帧里的旧坐标 |
+| `type` | `AXValue` 写入 → 剪贴板粘贴（长文本/非 ASCII） → Unicode 按键 | 先确认焦点在目标上，否则 `focus_failed` 拒绝 |
+| `key` | CGEvent 键码 + 修饰键（cmd/shift/opt/ctrl/fn） | 可先聚焦目标元素或激活目标 App |
+| `scroll` | CGEvent 滚轮（先移动指针，macOS 按指针所在窗口路由） | `--up/--down`，或 `--to top/bottom` 直到无变化 |
+| `drag` | 按下 → 插值移动 → 抬起 | 两端都做命中测试 |
+| `menu` | 逐段驱动菜单栏（`AXShowMenu`/`AXPress`），等待 AXMenu 出现 | 支持标题路径与索引路径；菜单项仅在展开时存在 |
+| `focus` / `set` | `AXFocused` / `AXValue` 属性写入 | 写入后回读验证 |
+| `transcript` / `text` | 只读 | 感知原语 |
+| `app` | NSWorkspace 激活 / 启动 / 列表 | 激活后轮询 frontmost 确认 |
+| `clipboard` | NSPasteboard get/set | 粘贴时保存并恢复用户剪贴板 |
+| `wait` | 轮询 `get_status.version` | 供调用方编排动作序列 |
+
+#### V6-4 执行算法（每个动作）
+
+```
+1. 解析目标   ID → 该 App 的过滤帧；否则全帧 + QueryEngine（角色硬过滤；
+              近似平票或低置信拒绝执行，--allow-ambiguous 可覆盖）
+2. 解析元素   ID 文法 → AXUIElementCreateApplication → AXChildren 索引；
+              "mb" 前缀走 AXMenuBar 属性
+3. 校验新鲜度  role 硬校验 + identifier/位置容差（3% 主屏归一化）；
+              不符 → 刷新模型一次 → 同 ID 复验 → 按 role/identity 唯一重定位；
+              仍不符 → stale_reference（拒绝在错误元素上动手）
+4. 指针前置    AXUIElementCopyElementAtPosition 命中测试；结果不是目标本身/
+              其后代/（容器目标的）祖先 → target_obscured 拒绝
+5. 执行       语义动作优先；否则合成事件
+6. 验证       轮询 version（80ms）+ 直接回读元素（value/focused/exists）
+7. 上报       changed（桌面有反应）与 verified（反应符合预期）分开
+```
+
+关键取舍：**元素 ID 是地址不是句柄**。帧永远比桌面旧，因此每次动作都重新解析、
+校验、必要时重定位；点击坐标取实时 AX 几何，而不是帧中的归一化矩形。命中测试让
+"坐标点击"在没有截图的前提下依然安全：目标被遮挡时宁可失败，也不点穿。
+
+#### V6-5 结果语义与错误码
+
+`ok` = 操作已执行；`changed` = 桌面确有反应；`verified` = 反应符合该动作预期。
+三者分离："点了但没变化"不是失败，"变化来自别处"也不等于成功。
+
+| 错误码 | 含义 |
+| :--- | :--- |
+| `not_found` | 查询无候选，或候选置信度不足 |
+| `ambiguous_match` | 前两名分差 < 0.05，拒绝猜 |
+| `stale_reference` | ID 已不能对应到同一元素，且重定位失败 |
+| `target_obscured` | 命中测试失败或目标被遮挡 |
+| `action_unsupported` | 元素不支持所需 AX 动作/属性写入 |
+| `focus_failed` | 无法把键盘焦点移到目标，拒绝向未知控件输入 |
+| `permission_denied` | 调用方进程未获辅助功能权限 |
+| `blocked_by_policy` | 被 `--allow-app` 或安全输入框策略拒绝 |
+| `app_not_running` / `timeout` / `invalid_argument` / `internal_error` | 其余执行失败 |
+
+#### V6-6 零截图约束（机械可查）
+
+`scripts/audit_no_screenshot.sh` 扫描 `Sources/ client/ Tests/ scripts/` 中的
+`CGWindowListCreateImage` / `CGDisplayCreateImage` / ScreenCaptureKit / Vision /
+`screencapture` 等符号，命中即构建失败。没有"截图兜底"开关：AX 不可用的画布类
+界面如实返回低置信度或操作失败，而不是偷偷切到像素路径。
+
+#### V6-7 实测（本机，双屏，临时 dialog）
+
+| 动作 | 方法 | 实测 |
+| :--- | :--- | :--- |
+| 读窗口 | `transcript` | 对话框全文 + 按钮标签，无 OCR |
+| 输入中文+ASCII | `AXValue` 写入 | 回读一致，`verified=true`，~1.6s（含等待版本变化） |
+| 读回 | `text` | 24–25ms |
+| 关窗 | `ax_press` | 262–322ms，`after.element.exists=false` |
+| Esc 关窗 | `cg_key` | 418ms，版本变化确认 |
+| 命中测试点击 | `cg_click` | 命中通过；无可见变化时如实报 `changed=false` |
+| 滚动 | `cg_scroll` / `--to top\|bottom` | 10 行：0 → 0.089；`--to top` 3 轮回 0.000；`--to bottom` 到 1.000 |
+| 拖拽 | `cg_drag` | 滑块中心拖到同行按钮：AXValue 0 → 1 |
+| 真实 App | `menu` / `transcript` | Edge：打开"文件"菜单（AXPress）；transcript 读出 232 实体窗口全文 |
+| 端到端 | `scripts/act_smoke.py` | 感知→输入→回读→AXPress→进程退出，全绿 |
+
+#### V6-8 已知限制
+
+- 安全输入框默认拒绝写入，且读不到值（只能用版本变化判断"有反应"）。
+- 画布/游戏等无 AX 语义的界面只能坐标点击；命中测试不可用时需显式
+  `--allow-blind-click`（默认拒绝盲点）。
+- Electron/Chromium 的 Web 树取决于其辅助功能是否被触发；未暴露时只能看到外壳。
+- 覆盖式滚动条通常不在 AX 树中：滚动以"内容是否变化"验证，而非滚动条位置。
+- 菜单项仅在展开时存在，`menu` 是多步动作；失败会指出具体段落。
+- 不提供 quit / 修改窗口几何等破坏性动词；需要时由调用方自行实现。
+
+#### V6-9 审查台同步（gvglui）
+
+控制台从"只读观测 + 自带点击"升级为"computer-use 栈的观测台"：
+
+- **同一执行器**：`performPress/Click/Type/Key/Scroll` 全部调用 `GVGLAction.ActionExecutor`，
+  与 agent 走同一条路径；控制台里删掉了自己那份 CGEvent 点击代码。`允许执行动作`
+  是唯一闸门，读取窗口文本不受限（感知不需要写权限）。
+- **动作条**：指令面板新增 语义按下 / 指针点击 / 输入 / 按键 / 滚动 / 读窗口文本；
+  候选卡片也提供 按下 / 点击 / 读窗口。侧栏新增**动作日志**：时间 / 动作 / 目标 /
+  方法 / 是否变化 / 是否验证 / 耗时，失败显示稳定错误码。
+- **窗口文本面板**（`TranscriptView`）：读选中窗口或前台 App，内容来自 AX 树，
+  可直接选中复制；这是"看屏幕"的替代面。
+- **重 App 感知**：新增 `--node-budget` / `--capture-time`；慢采集冷却阈值改为跟随
+  capture-time——否则调大预算会让每次采集都超过 1s，触发 30s 冷却，模型永久陈旧
+  （实测：console 自身 20k 节点，修复前 transcript 一直显示启动时状态）。
+
+实测（本机，console 自观测，零截图）：
+
+| 项 | 结果 |
+| :--- | :--- |
+| 面板可见性 | 经 AX 读回 console 全文：动作条、动作日志、窗口文本、空态提示齐全 |
+| 自举动作 | `gvglact press` 按下 console 的「前台 App」按钮 → `ax_press`、changed、verified |
+| 效果观测 | 9s 内（含 daemon 重采）窗口文本由占位符变为前台 App（ZCode）全文 |
+| 标签保真 | `允许执行动作: 0` / `自动跟随: 1`（AXDescription + 状态），不再丢标签 |
 
 ## 14. 构建与运行
 

@@ -122,6 +122,22 @@ final class IDStabilizerTests: XCTestCase {
         XCTAssertEqual(remapped.missingWindowTitles, ["孤窗"])
     }
 
+    /// The action layer decides "use AXPress or fall back to a click" from
+    /// `Entity.actions`. `actionProbeFailures` is the signal that those actions
+    /// may be incomplete, so a re-key silently resetting it to zero would tell
+    /// the executor the field is trustworthy when it is not.
+    func testRemappedPreservesActionProbeFailures() {
+        let e = entity("pid:1:0", title: "登录")
+        let output = PipelineOutput(
+            entities: [e],
+            relations: [],
+            index: SpatialIndex.build(from: [e]),
+            actionProbeFailures: 4
+        )
+        let remapped = output.remapped(by: ["pid:1:0": "pid:1:9"])
+        XCTAssertEqual(remapped.actionProbeFailures, 4)
+    }
+
     func testRemappedPreservesSpatialIndexGridSize() {
         let original = entity("pid:1:0-4", title: "登录")
         let output = PipelineOutput(

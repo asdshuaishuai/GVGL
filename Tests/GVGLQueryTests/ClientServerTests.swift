@@ -130,4 +130,20 @@ final class ClientServerTests: XCTestCase {
         let frame = try client.getFrame()
         XCTAssertEqual(frame.allEntities.count, 2000)
     }
+
+    /// A malformed request produces an error message that itself contains
+    /// quotes (Swift's DecodingError description). Building the error line by
+    /// string interpolation made that response invalid JSON — the client then
+    /// failed to parse the explanation of its own mistake.
+    func testErrorResponseIsValidJSONEvenWithQuotedMessage() throws {
+        let text = SocketServer.errorResponse(
+            "invalid_request",
+            #"malformed JSON: DecodingError.keyNotFound: CodingKeys(stringValue: "method", intValue: nil)"#
+        )
+        let data = try XCTUnwrap(text.data(using: .utf8))
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let error = try XCTUnwrap(object["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? String, "invalid_request")
+        XCTAssertTrue((error["message"] as? String)?.contains("method") == true)
+    }
 }
