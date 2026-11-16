@@ -45,6 +45,8 @@ class GVGLClient:
         self.socket_path = socket_path
         self.timeout = timeout
         self._frame = None       # cached frame
+        self._frame_version = None
+        self._frame_app = None
 
     def call(self, method: str, app: str | None = None) -> dict:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -73,8 +75,23 @@ class GVGLClient:
     # -- frame access with version-aware cache ------------------------------
 
     def get_frame(self, app: str | None = None, force: bool = False) -> dict:
-        if force or self._frame is None or app is not None:
+        """Full frame, cached per (app, model version).
+
+        The cache is only reusable while the daemon's model has not moved:
+        a long-lived caller must not be served a frozen desktop (the previous
+        "version-aware" comment promised exactly that, but nothing ever
+        compared versions, so a second query in the same process silently
+        returned the first frame forever). `get_status` is ~1ms — the honest
+        price of the cache.
+        """
+        if force or self._frame is None or app != self._frame_app:
             self._frame = self.call("get_frame", app=app)
+            self._frame_version = self._frame.get("version")
+            self._frame_app = app
+            return self._frame
+        if self.call("get_status").get("version") != self._frame_version:
+            self._frame = self.call("get_frame", app=app)
+            self._frame_version = self._frame.get("version")
         return self._frame
 
     def get_frame_since(self, since: int, app: str | None = None) -> dict | None:
@@ -107,6 +124,8 @@ class GVGLClient:
         # Cache the incremental frame so later queries are consistent.
         if "frame" in result:
             self._frame = result["frame"]
+            self._frame_version = result["frame"].get("version")
+            self._frame_app = app
         return result
 
     def subscribe(self, since: int | None = None,
