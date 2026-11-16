@@ -1,0 +1,81 @@
+{
+  "screen": {"width": 3440, "height": 1440, "scaleFactor": 1, "displays": []},
+  "cases": [
+    {
+      "name": "exact title and exact role",
+      "target": "e1",
+      "entities": [
+        {"id": "e1", "role": "AXButton", "title": "登录", "enabled": true, "actions": ["AXPress"], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.1, 0.1, 0.05, 0.05], "window": [0.1, 0.1, 0.05, 0.05]}},
+        {"id": "e2", "role": "AXStaticText", "title": "登录", "enabled": true, "actions": [], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.5, 0.5, 0.1, 0.02], "window": [0.5, 0.5, 0.1, 0.02]}}
+      ],
+      "params": {"role": "AXButton", "label": "登录"},
+      "expected": {"semantic": 1.0, "role": 1.0, "spatial": 0.0, "size": 1.0, "topology": 1.0, "total": 1.0}
+    },
+    {
+      "name": "placeholder beats detail/value/identifier",
+      "target": "e1",
+      "entities": [
+        {"id": "e1", "role": "AXTextField", "placeholder": "搜索网页", "enabled": true, "actions": [], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.2, 0.2, 0.2, 0.05], "window": [0.2, 0.2, 0.2, 0.05]}}
+      ],
+      "params": {"role": "AXTextField", "label": "搜索"},
+      "expected": {"semantic": 0.65, "role": 1.0, "spatial": 0.0, "size": 1.0, "topology": 0.6, "total": 0.7833333333333333}
+    },
+    {
+      "name": "compatible role (AXButton query matches AXMenuItem)",
+      "target": "e1",
+      "entities": [
+        {"id": "e1", "role": "AXMenuItem", "title": "登录", "enabled": true, "actions": ["AXPress"], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.3, 0.3, 0.05, 0.05], "window": [0.3, 0.3, 0.05, 0.05]}}
+      ],
+      "params": {"role": "AXButton", "label": "登录"},
+      "expected": {"semantic": 1.0, "role": 0.6, "spatial": 0.0, "size": 1.0, "topology": 1.0, "total": 0.8933333333333333}
+    },
+    {
+      "name": "right-of across windows uses screen space",
+      "target": "e1",
+      "entities": [
+        {"id": "e0", "role": "AXButton", "title": "参考", "enabled": true, "actions": ["AXPress"], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.1, 0.5, 0.05, 0.05], "window": [0.0, 0.0, 1.0, 1.0]}},
+        {"id": "e1", "role": "AXButton", "title": "目标", "enabled": true, "actions": ["AXPress"], "appID": "pid:1", "pid": 1, "windowID": "w2", "geometry": {"screen": [0.3, 0.5, 0.05, 0.05], "window": [0.0, 0.0, 1.0, 1.0]}}
+      ],
+      "params": {"role": "AXButton", "label": "目标", "refID": "e0", "refDir": "right-of"},
+      "expected": {"semantic": 1.0, "role": 1.0, "spatial": 1.0, "size": 1.0, "topology": 1.0, "total": 1.0}
+    },
+    {
+      "name": "near within the same window uses window space",
+      "target": "e1",
+      "entities": [
+        {"id": "e0", "role": "AXStaticText", "title": "标题", "enabled": true, "actions": [], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.1, 0.5, 0.05, 0.05], "window": [0.0, 0.0, 0.5, 0.5]}},
+        {"id": "e1", "role": "AXButton", "title": "确定", "enabled": true, "actions": ["AXPress"], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.1, 0.52, 0.05, 0.05], "window": [0.2, 0.23, 0.1, 0.1]}}
+      ],
+      "params": {"role": "AXButton", "label": "确定", "refID": "e0", "refDir": "near"},
+      "expected": {"semantic": 1.0, "role": 1.0, "spatial": 1.0, "size": 1.0, "topology": 1.0, "total": 1.0}
+    },
+    {
+      "name": "no direction satisfied, same quadrant fallback",
+      "target": "e1",
+      "entities": [
+        {"id": "e0", "role": "AXWindow", "title": "窗口", "enabled": true, "actions": [], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.55, 0.55, 0.2, 0.2], "window": [0.0, 0.0, 1.0, 1.0]}},
+        {"id": "e1", "role": "AXButton", "title": "远处", "enabled": true, "actions": ["AXPress"], "appID": "pid:1", "pid": 1, "windowID": "w2", "geometry": {"screen": [0.7, 0.8, 0.05, 0.05], "window": [0.0, 0.0, 1.0, 1.0]}}
+      ],
+      "params": {"role": "AXButton", "label": "远处", "refID": "e0", "refDir": "right-of"},
+      "expected": {"semantic": 1.0, "role": 1.0, "spatial": 0.5, "size": 1.0, "topology": 1.0, "total": 0.875}
+    },
+    {
+      "name": "value is the only usable label",
+      "target": "e1",
+      "entities": [
+        {"id": "e1", "role": "AXTextField", "value": "kelthas@example.com", "enabled": true, "actions": [], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.4, 0.4, 0.1, 0.03], "window": [0.4, 0.4, 0.1, 0.03]}}
+      ],
+      "params": {"label": "kelthas"},
+      "expected": {"semantic": 0.55, "role": 0.0, "spatial": 0.0, "size": 1.0, "topology": 0.6, "total": 0.47}
+    },
+    {
+      "name": "size band 0.00005..0.2 scores 0.6",
+      "target": "e1",
+      "entities": [
+        {"id": "e1", "role": "AXButton", "title": "登录", "enabled": true, "actions": ["AXPress"], "appID": "pid:1", "pid": 1, "windowID": "w1", "geometry": {"screen": [0.1, 0.1, 0.01, 0.01], "window": [0.1, 0.1, 0.01, 0.01]}}
+      ],
+      "params": {"role": "AXButton", "label": "登录"},
+      "expected": {"semantic": 1.0, "role": 1.0, "spatial": 0.0, "size": 0.6, "topology": 1.0, "total": 0.9466666666666667}
+    }
+  ]
+}

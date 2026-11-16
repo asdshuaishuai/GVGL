@@ -350,7 +350,7 @@ Sources/GVGLAction/ computer-use 执行层（元素解析/语义动作/合成事
 Sources/gvglact/    执行器 CLI（press/click/type/key/scroll/drag/menu/transcript/app/…）
 client/gvgl_query.py 参考客户端（status/frame/list/query/subscribe/watch + --json/--cell）
 scripts/             launchd 安装/卸载 + audit_geometry.py + audit_no_screenshot.sh + act_smoke.py
-Tests/              167 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签）
+Tests/              173 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签/重定位；评分向量双端一致性）
 ```
 
 ## 11. 运行参数
@@ -623,6 +623,10 @@ App/窗口（appKey/windowID）× 什么角色/文本（role/label）"** 四级�
 | 自举动作 | `gvglact press` 按下 console 的「前台 App」按钮 → `ax_press`、changed、verified |
 | 效果观测 | 9s 内（含 daemon 重采）窗口文本由占位符变为前台 App（ZCode）全文 |
 | 标签保真 | `允许执行动作: 0` / `自动跟随: 1`（AXDescription + 状态），不再丢标签 |
+
+实现方案的跨平台抽象（不变量 + 平台映射表 + 适配层划分）见
+[docs/wiki/Porting.md](docs/wiki/Porting.md)：帧契约、评分、动作算法、安全护栏、
+零截图门禁与平台无关，只有感知遍历与输入合成两处按平台实现。
 
 ## 14. 构建与运行
 

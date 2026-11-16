@@ -32,6 +32,7 @@ scripts/package-apps.sh --install  # Build app bundle into /Applications/GVGL.ap
 python3 client/gvgl_query.py status # Quick client check against running daemon
 python3 scripts/audit_geometry.py   # Runtime geometry invariant audit
 scripts/audit_no_screenshot.sh      # Must stay green: no capture/OCR APIs
+python3 scripts/test_scoring_parity.py  # Swift/Python scoring must agree on shared vectors
 python3 scripts/act_smoke.py --socket /tmp/gvgl-act.sock  # End-to-end act loop
 ```
 

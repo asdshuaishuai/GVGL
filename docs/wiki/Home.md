@@ -27,6 +27,7 @@ python3 client/gvgl_query.py status      # CLI 客户端
 | [查询与评分](Query.md) | 查询流程、五维评分算法、置信度门限、指令解析 |
 | [客户端](Client.md) | gvgl_query.py 与 gvglui 审查台用法 |
 | [动作层](Act.md) | gvglact：感知→动作→验证，全链路零截图 |
+| [跨平台移植](Porting.md) | 不变量 + 平台映射表：Linux/Windows 同构 |
 | [运维](Ops.md) | 构建、launchd 常驻、TCC 权限、性能指标 |
 | [路线图](Roadmap.md) | V1.6/V2 状态、偏离审计索引、已知限制 |
 | [测试](Testing.md) | 单测清单、真机验证方法 |

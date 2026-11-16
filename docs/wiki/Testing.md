@@ -177,6 +177,21 @@ python3 scripts/load_check.py --socket /tmp/gvgl-load.sock
 
 改动 socket 层（连接、订阅、线程模型）后必须跑这一项。
 
+## 评分一致性门（双实现防漂移）
+
+五维评分（§6.2）实现两次：Swift `QueryEngine`（库侧，gvglui/gvglact 用）与 Python
+`gvgl_query.py`（agent 实际调用的 CLI）。曾经靠人工同步（size 分档就人工改过两次）。
+`Tests/Fixtures/query_vectors.json` 是唯一真相源：`ScoringParityTests`（Swift）与
+`scripts/test_scoring_parity.py`（Python）都读它，任何权重、分档或归一化漂移都会
+在两端同时失败。
+
+```bash
+swift test --filter ScoringParityTests
+python3 scripts/test_scoring_parity.py
+```
+
+改评分规则时：先改向量预期，再改两端实现，最后跑两个门。
+
 ## 已知曾修复的问题（回归参考）
 
 | 问题 | 修复 |

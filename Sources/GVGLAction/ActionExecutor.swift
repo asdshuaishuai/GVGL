@@ -195,7 +195,7 @@ public final class ActionExecutor {
     /// Finds the same element after its path shifted: same app, same role, same
     /// identifier (or title), preferably the same window, and only when the
     /// answer is unique.
-    private func relocate(entity: Entity, in frame: GVGLFrame) -> Entity? {
+    func relocate(entity: Entity, in frame: GVGLFrame) -> Entity? {
         var pool = frame.allEntities.filter {
             $0.role == entity.role && $0.appID == entity.appID && $0.id != entity.id
         }
