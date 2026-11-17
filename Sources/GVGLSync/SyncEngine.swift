@@ -584,6 +584,11 @@ public final class SyncEngine: @unchecked Sendable {
         public var monitoredApps: Int
         public var version: UInt64
         public var permissionGranted: Bool
+        /// True when the console session is at the lock screen. A locked Mac
+        /// serves empty or degenerate AX trees, so an agent polling
+        /// `entityCount: 0` must be able to tell "locked" from "empty
+        /// desktop" — otherwise it gets a confidently wrong answer at 3am.
+        public var screenLocked: Bool
     }
 
     public func status() -> EngineStatus {
@@ -593,7 +598,14 @@ public final class SyncEngine: @unchecked Sendable {
         return EngineStatus(
             monitoredApps: count,
             version: model.version,
-            permissionGranted: AXIsProcessTrusted()
+            permissionGranted: AXIsProcessTrusted(),
+            screenLocked: SyncEngine.isScreenLocked
         )
+    }
+
+    /// Lock state is a local session query — no AX, no IPC — cheap enough to
+    /// read on every status call.
+    static var isScreenLocked: Bool {
+        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
     }
 }

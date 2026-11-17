@@ -145,3 +145,6 @@ python3 scripts/test_act_client.py
   `AXScrollBar`，则直接读其 0…1 的位置值（`--to top/bottom` 会据此判定终点）。
 - 菜单项仅在展开时存在，`menu` 是多步动作；失败会指出具体段落。
 - 不提供 quit / 改窗口几何等破坏性动词。
+- **锁屏时不要操作**：macOS 只服务 loginwindow 的 AX，帧会退化为空、动作会
+  失败。先看 `gvglact status` 的 `screen_locked`（或 `get_status` 的
+  `screenLocked`），等解锁后再继续——0 实体不等于空桌面。

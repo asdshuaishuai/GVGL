@@ -274,6 +274,7 @@ Topology: 有 windowID=+0.3 / enabled=+0.3 / 有 actions=+0.4
 | 单 App 权限缺失 | 帧 `status=permissionDenied` |
 | 空模型 | 帧 `status=unavailable` |
 | 查询无匹配 / 多匹配 | 客户端 `not_found` / `ambiguous`（§6.3） |
+| 屏幕锁定 | AX 只服务 loginwindow，其余 App 采集退化为 0 实体或菜单栏异常注入；`get_status` 增 `screenLocked`（`CGSSessionCopyCurrentDictionary` 本地查询，无 AX 无 IPC）。**0 实体 ≠ 空桌面**：agent 必须先看这个字段，否则锁屏时会自信地报告"桌面是空的" |
 
 帧级状态优先级：`warming > permissionDenied > partial > ok`。
 
@@ -304,7 +305,7 @@ Unix Domain Socket（默认 `~/.gvgl/gvgl.sock`），NDJSON 一行一答；`subs
                                                  {"event":"frame","version":N,"changed_apps":[...],
                                                   "requires_full_refresh":false}
                                                  静默期每 60s 一行 {"event":"ping",...}
-→ {"method":"get_status"}                      ← {"result":{monitoredApps,version,permissionGranted,uptime,socket,frameStatus}}
+→ {"method":"get_status"}                      ← {"result":{monitoredApps,version,permissionGranted,screenLocked,uptime,socket,frameStatus}}
 → 其他/坏 JSON                                 ← {"error":{"code":"invalid_method"|"invalid_request","message"}}
 ```
 
@@ -362,7 +363,7 @@ Sources/GVGLAction/ computer-use 执行层（元素解析/语义动作/合成事
 Sources/gvglact/    执行器 CLI（press/click/type/key/scroll/drag/menu/transcript/app/…）
 client/gvgl_query.py 参考客户端（status/frame/list/query/subscribe/watch + --json/--cell）
 scripts/             launchd 安装/卸载 + audit_geometry.py + audit_no_screenshot.sh + act_smoke.py
-Tests/              161 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签/重定位；评分向量双端一致性）
+Tests/              171 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签/重定位；评分向量双端一致性）
 ```
 
 ## 11. 运行参数

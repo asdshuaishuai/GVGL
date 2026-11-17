@@ -423,9 +423,10 @@ public final class SocketServer: @unchecked Sendable {
                 monitoredApps: s.monitoredApps,
                 version: s.version,
                 permissionGranted: s.permissionGranted,
+                screenLocked: s.screenLocked,
                 uptime: Date().timeIntervalSince(startTime),
                 socket: socketPath,
-                frameStatus: model.frame(screen: engine.screen).status.rawValue
+                frameStatus: model.frameStatus.rawValue
             )
             guard let payload = try? JSONEncoder.gvgl.encode(["result": statusPayload]),
                   let text = String(data: payload, encoding: .utf8) else {
@@ -465,6 +466,7 @@ public final class SocketServer: @unchecked Sendable {
         var monitoredApps: Int
         var version: UInt64
         var permissionGranted: Bool
+        var screenLocked: Bool
         var uptime: TimeInterval
         var socket: String
         var frameStatus: String

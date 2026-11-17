@@ -73,6 +73,14 @@ final class ClientServerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(typed.monitoredApps, 0)
         XCTAssertTrue(["ok", "warming", "partial", "permissionDenied", "unavailable"].contains(typed.frameStatus))
         XCTAssertEqual(typed.socket, socketPath)
+        // Lock state is part of the wire contract: a locked Mac serves empty
+        // AX trees, and "entityCount 0" must stay distinguishable from
+        // "empty desktop" (the whole reason this field exists).
+        if let raw = try? client.getStatus(), let locked = raw["screenLocked"] {
+            XCTAssertEqual(locked as? Bool, typed.screenLocked)
+        } else {
+            XCTFail("screenLocked missing from get_status payload")
+        }
     }
 
     func testGetFrameSinceRoundtrip() throws {

@@ -403,6 +403,7 @@ extension ActionExecutor {
             payload["monitored_apps"] = .number(Double(daemon.monitoredApps))
             payload["daemon_permission"] = .bool(daemon.permissionGranted)
             payload["frame_status"] = .string(daemon.frameStatus)
+            payload["screen_locked"] = .bool(daemon.screenLocked)
         } else {
             payload["daemon_available"] = .bool(false)
         }

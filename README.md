@@ -133,7 +133,7 @@ Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几
 ## 测试
 
 ```bash
-swift test        # 161 个单测：几何/显示空间/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）+ 动作层（ID 文法/键位/结果编码/transcript 标签/重定位）+ 评分向量一致性
+swift test        # 171 个单测：几何/显示空间/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）+ 动作层（ID 文法/键位/结果编码/transcript 标签/重定位）+ 评分向量一致性
 python3 scripts/test_scoring_parity.py   # Swift QueryEngine 与 Python 客户端评分一致性（共用 Tests/Fixtures/query_vectors.json）
 ```
 

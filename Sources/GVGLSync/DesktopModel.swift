@@ -362,6 +362,15 @@ public final class DesktopModel: @unchecked Sendable {
         )
     }
 
+    /// Frame-level status without materializing a frame. `get_status` is the
+    /// menu-bar monitor's 2s poll; rebuilding the scene tree + index on every
+    /// poll just to read one enum was the wrong cost.
+    public var frameStatus: FrameStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        return Self.frameStatus(of: Array(apps.values))
+    }
+
     /// Frame-level status priority (DESIGN §7): warming > permissionDenied >
     /// partial > ok; an empty model is unavailable. Shared by materialization
     /// and the model-side `desktopMap` so the two paths can never disagree.

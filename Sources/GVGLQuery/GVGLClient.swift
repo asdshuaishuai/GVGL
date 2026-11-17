@@ -110,15 +110,18 @@ public final class GVGLClient: @unchecked Sendable {
         public var uptime: TimeInterval
         public var socket: String
         public var frameStatus: String
+        public var screenLocked: Bool
 
         public init(monitoredApps: Int, version: UInt64, permissionGranted: Bool,
-                    uptime: TimeInterval, socket: String, frameStatus: String) {
+                    uptime: TimeInterval, socket: String, frameStatus: String,
+                    screenLocked: Bool = false) {
             self.monitoredApps = monitoredApps
             self.version = version
             self.permissionGranted = permissionGranted
             self.uptime = uptime
             self.socket = socket
             self.frameStatus = frameStatus
+            self.screenLocked = screenLocked
         }
     }
 
