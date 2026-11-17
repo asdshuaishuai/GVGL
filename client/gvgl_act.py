@@ -20,6 +20,7 @@
     python3 client/gvgl_act.py drag    --from pid:1:0-2 --to pid:1:0-3
     python3 client/gvgl_act.py menu    --app pid:123 --path "文件/新建窗口"
     python3 client/gvgl_act.py focus   --id pid:123:0-1
+    python3 client/gvgl_act.py hover   --id pid:123:0-5
     python3 client/gvgl_act.py set     --id pid:123:0-1 --value "文本"
     python3 client/gvgl_act.py app     activate com.apple.finder
     python3 client/gvgl_act.py wait    --since 120 --timeout 3
@@ -184,6 +185,9 @@ class ActClient:
     def focus(self, target: str | None = None, **q) -> dict:
         return self._act("focus", target, q)
 
+    def hover(self, target: str | None = None, **q) -> dict:
+        return self._act("hover", target, q)
+
     def set_value(self, target: str, value: str) -> dict:
         return self.run("set", "--id", target, "--value", value)
 
@@ -258,6 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_scroll.add_argument("--down", type=int)
     p_scroll.add_argument("--to")
     action_parser("focus")
+    action_parser("hover")
 
     p_type = action_parser("type")
     p_type.add_argument("--text", required=True)
@@ -329,6 +334,8 @@ def main(argv: list[str] | None = None) -> int:
                 lines = -int(args.down)
             payload = client.scroll(args.id, lines=lines, to=args.to,
                                     role=args.role, label=args.label, app=args.app)
+        elif args.command == "hover":
+            payload = client.hover(args.id, role=args.role, label=args.label, app=args.app)
         elif args.command == "focus":
             payload = client.focus(args.id, role=args.role, label=args.label, app=args.app)
         elif args.command == "drag":

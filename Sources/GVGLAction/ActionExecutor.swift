@@ -664,6 +664,46 @@ public final class ActionExecutor {
         return "ax_" + stripped.lowercased()
     }
 
+    // MARK: - Hover
+
+    /// Moves the pointer over the target without pressing anything.
+    /// Tooltips, hover-reveal buttons and split-view dividers need it. The
+    /// same hit-test guard applies: a hover must not land on something else
+    /// either, because "something else" may be a menu that would open.
+    public func hover(_ spec: TargetSpec) throws -> ActionResult {
+        let started = DispatchTime.now()
+        var result = ActionResult(action: "hover")
+        let target = try resolve(spec)
+        result.target = ActionTargetSummary(entity: target.entity, liveFrame: target.state.frame)
+        result.warnings = target.warnings
+
+        guard let frame = target.state.frame else {
+            throw ActionFailure(.invalidArgument, "element has no frame to hover")
+        }
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        try guardClickPoint(target: target, point: point, into: &result)
+
+        let version = currentVersion()
+        result.before = beforeSnapshot(target, version: version)
+        result.method = "cg_hover"
+        if options.dryRun {
+            result.dryRun = true
+            result.warnings.append("dry run: would move the pointer to (\(Int(point.x)), \(Int(point.y)))")
+            result.latencyMS = elapsed(started)
+            return result
+        }
+        InputSynthesizer.move(to: point)
+        result.attempts.append(ActionAttempt("cg_hover", ok: true,
+                                             detail: "\(Int(point.x)),\(Int(point.y))"))
+        let verification = verify(target: target, beforeVersion: version, before: result.before!,
+                                  expectation: .anyChange, timeout: options.timeout)
+        result.changed = verification.changed
+        result.verified = verification.verified
+        result.after = verification.after
+        result.latencyMS = elapsed(started)
+        return result
+    }
+
     // MARK: - Type
 
     public func type(_ spec: TargetSpec, text: String,

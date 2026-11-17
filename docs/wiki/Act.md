@@ -27,6 +27,7 @@ gvglact click --id pid:123:0-2 --count 2         # 命中测试后的双击
 gvglact type --id pid:123:0-1 --text "你好 hello" # AXValue → 粘贴 → Unicode 按键
 gvglact key --chord "cmd+s" --app pid:123
 gvglact scroll --id pid:123:0-5 --down 5
+gvglact hover  --id pid:123:0-5                 # 工具提示/悬停显现
 gvglact drag --from pid:123:0-2 --to pid:123:0-3
 gvglact menu --app pid:123 --path "文件/新建窗口"
 gvglact text --id pid:123:0-1                    # 读该元素完整 AXValue

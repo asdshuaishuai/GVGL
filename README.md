@@ -88,7 +88,8 @@ gvglact find --app pid:123 --role AXButton --label 登录
 gvglact press --id pid:123:0-2                       # AXPress（不是坐标点击）
 gvglact type  --id pid:123:0-1 --text "hello 你好"    # AXValue → 粘贴 → Unicode 按键
 gvglact key   --chord "cmd+s" --app pid:123
-gvglact scroll --id pid:123:0-5 --down 5
+gvglact scroll --id pid:123:0-5
+gvglact hover  --id pid:123:0-5                 # 工具提示/悬停显现（无按下） --down 5
 gvglact menu  --app pid:123 --path "文件/新建窗口"
 gvglact app   activate --target com.apple.finder
 gvglact wait  --since 120 --timeout 3

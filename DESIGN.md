@@ -532,6 +532,7 @@ App/窗口（appKey/windowID）× 什么角色/文本（role/label）"** 四级�
 | `type` | `AXValue` 写入 → 剪贴板粘贴（长文本/非 ASCII） → Unicode 按键 | 先确认焦点在目标上，否则 `focus_failed` 拒绝 |
 | `key` | CGEvent 键码 + 修饰键（cmd/shift/opt/ctrl/fn） | 可先聚焦目标元素或激活目标 App |
 | `scroll` | CGEvent 滚轮（先移动指针，macOS 按指针所在窗口路由） | `--up/--down`，或 `--to top/bottom` 直到无变化 |
+| `hover` | CGEvent 鼠标移动（同一命中测试护栏） | 工具提示/悬停显现；不按任何键 |
 | `drag` | 按下 → 插值移动 → 抬起 | 两端都做命中测试 |
 | `menu` | 逐段驱动菜单栏（`AXShowMenu`/`AXPress`），等待 AXMenu 出现 | 支持标题路径与索引路径；菜单项仅在展开时存在 |
 | `focus` / `set` | `AXFocused` / `AXValue` 属性写入 | 写入后回读验证 |

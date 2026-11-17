@@ -96,6 +96,7 @@ commands:
   type     <target> --text TEXT   set value / paste / unicode keys; --submit
   key      --chord "cmd+s"        keyboard chord; optional --app or --id
   scroll   <target>               --up N | --down N | --to top|bottom
+  hover    <target>               move the pointer over it (tooltips, hover-reveal)
   drag     --from ID --to ID      pointer drag between two elements
   menu     --app pid:N --path "A/B"   drive the menu bar by path or indices
   text     <target>               read the full AXValue (--max N)
@@ -194,7 +195,7 @@ func exitWithFailure(_ command: String, _ error: ActionError, pretty: Bool) -> N
 // MARK: - Main
 
 let verbs: Set<String> = [
-    "status", "find", "press", "click", "type", "key", "scroll", "drag",
+    "status", "find", "press", "click", "type", "key", "scroll", "drag", "hover",
     "menu", "text", "transcript", "focus", "set", "app", "clipboard", "wait",
 ]
 
@@ -287,6 +288,9 @@ do {
             lines = 3
         }
         result = try executor.scroll(try target(args), lines: lines, to: args.value("to"))
+
+    case "hover":
+        result = try executor.hover(try target(args))
 
     case "drag":
         guard let fromValue = args.value("from"), let toValue = args.value("to") else {
