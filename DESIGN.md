@@ -354,7 +354,8 @@ Sources/GVGLSync/   半同步引擎
   DesktopModel.swift  常驻模型 + version + 变更日志 + 帧物化
   ObserverRegistry.swift  每 App AXObserver（专用 RunLoop 线程）
   WorkspaceTracker.swift  NSWorkspace 启停跟踪
-  SyncEngine.swift    去抖/增量同步/子树重捕/Reconciler/节流/白名单/屏幕刷新
+  SyncEngine.swift    去抖/增量同步/子树重捕/Reconciler/白名单/屏幕刷新（编排）
+  WindowSubtreeMerge.swift  per-window 子树合并三重过滤 + ID 路径解析 + 采集闸门（纯函数，可单测）
 Sources/GVGLServer/  UDS 服务（get_frame/since/subscribe 推送/get_status）
 Sources/gvgl/       守护进程入口（参数/信号/显示器枚举）
 Sources/GVGLAction/ computer-use 执行层（元素解析/语义动作/合成事件/命中测试/回读验证）

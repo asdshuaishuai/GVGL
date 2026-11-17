@@ -487,13 +487,15 @@ public final class SyncEngine: @unchecked Sendable {
     }
 
     /// Throttling gate: skip if recently captured, or cooling down after errors.
+    /// The predicate itself lives in `CaptureGate` for testability.
     private func shouldCaptureLocked(_ key: String) -> Bool {
-        let now = Date()
-        if let cooldown = cooldownUntil[key], cooldown > now { return false }
-        if let last = lastCaptured[key], now.timeIntervalSince(last) < minCaptureInterval {
-            return false
-        }
-        return true
+        CaptureGate.shouldCapture(
+            now: Date(),
+            lastCaptured: lastCaptured[key],
+            cooldownUntil: cooldownUntil[key],
+            minInterval: minCaptureInterval,
+            cooldownOnError: cooldownOnError
+        )
     }
 
     // MARK: - Per-window subtree capture
@@ -522,7 +524,7 @@ public final class SyncEngine: @unchecked Sendable {
             let candidates = oldWindows.filter { !handled.contains($0.id) }
             guard let match = candidates.min(by: { distanceFrom($0, to: rect) < distanceFrom($1, to: rect) }),
                   distanceFrom(match, to: rect) < 0.05 else { continue }
-            guard let path = Self.numericPath(from: match.id) else { continue }
+            guard let path = WindowSubtreeMerge.numericPath(from: match.id) else { continue }
             handled.insert(match.id)
             captureSubtree(info: info, windowID: match.id, path: path)
         }
@@ -549,7 +551,7 @@ public final class SyncEngine: @unchecked Sendable {
         let output = Pipeline(screen: screen).process(subtree)
         guard let previous = model.output(appKey: info.appKey) else { return }
 
-        let merged = mergeWindow(previous: previous, subtree: output, windowID: windowID)
+        let merged = WindowSubtreeMerge.merge(previous: previous, subtree: output, windowID: windowID)
         let map = IDStabilizer.stabilize(old: previous.entities, new: merged.entities)
         let remapped = merged.remapped(by: map)
 
@@ -568,43 +570,6 @@ public final class SyncEngine: @unchecked Sendable {
         )
     }
 
-    /// Replaces only the entities of `windowID` with the freshly captured
-    /// subtree; every other window keeps its previous entities byte-identical.
-    ///
-    /// Keep-filter is three-way, not just `windowID != windowID`: a subtree
-    /// re-capture also re-produces entities of nested windows (sheets,
-    /// drawers, Electron inner AXWindows) whose `windowID` points at the
-    /// nested window — filtering on the top-level id alone left them in
-    /// `keep` and the merged set ended up with the same path id twice.
-    /// 1. exact subtree ids (deterministic path-derived ids),
-    /// 2. the captured window's path namespace (covers budget-truncated
-    ///    re-captures that produced fewer ids than the previous sweep),
-    /// 3. the legacy windowID equality,
-    /// and the final id-dedup keeps the first occurrence.
-    private func mergeWindow(previous: PipelineOutput, subtree: PipelineOutput, windowID: String) -> PipelineOutput {
-        let subtreeIDs = Set(subtree.entities.map(\.id))
-        let keep = previous.entities.filter { e in
-            !subtreeIDs.contains(e.id) && !isInSubtreeNamespace(e.id, of: windowID) && e.windowID != windowID
-        }
-        let entities = (keep + subtree.entities).sorted { $0.id < $1.id }
-        return PipelineOutput(
-            entities: entities,
-            cgWindowCount: previous.cgWindowCount,
-            axWindowCount: previous.axWindowCount,
-            missingWindowTitles: previous.missingWindowTitles
-        )
-    }
-
-    /// True when `id` is `windowID` itself or a path-descendant of it
-    /// ("pid:7:0-2" owns "pid:7:0-2-3-1"). Non-path ids (stabilized drift,
-    /// "mb" menu-bar ids) are never in the namespace.
-    private func isInSubtreeNamespace(_ id: String, of windowID: String) -> Bool {
-        guard let entityPath = Self.numericPath(from: id),
-              let windowPath = Self.numericPath(from: windowID) else { return false }
-        guard entityPath.count >= windowPath.count else { return false }
-        return zip(entityPath, windowPath).allSatisfy(==)
-    }
-
     private func distanceFrom(_ entity: Entity, to rect: NormRect) -> Double {
         let center = entity.geometry.screen
         let dx = center.centerX - rect.centerX
@@ -612,13 +577,6 @@ public final class SyncEngine: @unchecked Sendable {
         return dx * dx + dy * dy
     }
 
-    /// "pid:722:0-2-3" → [0, 2, 3]; nil for ids without a numeric path suffix.
-    static func numericPath(from id: String) -> [Int]? {
-        guard let suffix = id.split(separator: ":", maxSplits: 2).last else { return nil }
-        let parts = suffix.split(separator: "-").compactMap { Int($0) }
-        guard !parts.isEmpty, parts.count == suffix.split(separator: "-").count else { return nil }
-        return parts
-    }
 
     // MARK: - Status
 
