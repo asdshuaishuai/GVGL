@@ -17,6 +17,7 @@
 | 7 | 元素 ID 是地址不是句柄；每次动作重新解析+校验+唯一重定位 | AX/AT-SPI/UIA 树都会在两次读取之间漂移 |
 | 8 | 零截图是机械门禁（`audit_no_screenshot.sh`），无"截图兜底"开关 | 产品定位；权限与信任面的边界 |
 | 9 | transcript 读窗口文本替代截图 | 感知层的第一公民，不是附加功能 |
+| 10 | 感知退化如实上报：`partial` / `warming` / `permissionDenied` / `screenLocked` | 锁屏时 AX 只服务 loginwindow，其余 App 退化为 0 实体；"0 实体 ≠ 空桌面"，agent 必须能区分（macOS 用 `CGSessionCopyCurrentDictionary`，本地查询） |
 
 ## 2. 平台映射表
 
@@ -30,6 +31,8 @@
 | 菜单驱动 | `AXMenuBar` 属性 + `AXShowMenu` | AT-SPI menu / app menu | UIA MenuBar + `InvokePattern` |
 | 剪贴板 | NSPasteboard | wl-clipboard / xclip | Win32 clipboard |
 | 进程发现（无 bundle 对话框） | NSWorkspace + CGWindow 双来源 | wnck / /proc + X | ShellWindows / WMI |
+| 锁屏检测 | `CGSessionCopyCurrentDictionary` → `CGSSessionScreenIsLocked` | loginctl / DBus（`org.freedesktop.ScreenSaver`、`org.gnome.ScreenSaver`） | `SystemParametersInfo(SPI_GETSCREENSAVERRUNNING)` / WTS 会话态 |
+| 屏幕枚举与坐标基准 | `CGGetOnlineDisplayList` + 主屏归一化 | XRandR / Wayland output 协议 | `EnumDisplayMonitors` + DPI 感知 |
 | 元素标签来源 | title；SwiftUI/Electron 走 description | AT-SPI Name（同理可能落在 description） | UIA Name / AutomationId |
 
 ## 3. 可直接复用的模块（纯逻辑，零平台依赖）
