@@ -59,13 +59,20 @@ Reconciler（默认 2~3s；V3 自适应批次：staleness 最旧优先，
 
 ```
 Sources/GVGLCore/    流水线（纯逻辑，合成 fixture 可单测）
-  Models.swift        Entity(递归 children)/SceneApp/GVGLFrame/Index/DisplayInfo/AppSnapshot
+  Screen.swift        DisplayInfo/ScreenInfo（主屏归一化 + displays 元数据）
+  NormRect.swift      归一化矩形
+  Region.swift        Region/Region9（Display Space 象限）
+  Geometry.swift      Geometry（四层归一化 rect）+ 坐标转换（M0 锁定版 + 多屏）
+  Entity.swift        Entity（递归 children）
+  SpatialIndex.swift  帧索引 + grid/cellKey
+  Frame.swift         SyncStatus/AppSnapshot/FrameStatus/SceneApp/GVGLFrame
+  DesktopMap.swift    MapDisplay/MapWindow/DesktopMap + 派生
+  FrameCoding.swift   JSONEncoder/JSONDecoder 策略
   SceneTree.swift     V4 场景树构建/拍平/自然 AX 序/depth 剪枝
   AXSnapshot.swift    DFS 快照 + 批量属性 + 预算/墙钟 + 子树快照 + 菜单栏第二根 + CG 探针接线
   AXValueCoercion.swift  AXValue 统一强转（感知与动作验证共用）
   CGWindowProbe.swift CGWindowList 第二数据源（z-order 常开；诊断受 --cg-check 控制）
   Geometry.swift      坐标转换（M0 锁定版 + 多屏）
-  Topology.swift      关系 + R12 裁剪 + 上限（V4 起仅测试/直接消费者使用）
   Pipeline.swift      快照 → 实体/索引
   IDStabilizer.swift  跨重建 ID 稳定 + PipelineOutput.remapped
 

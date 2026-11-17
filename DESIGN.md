@@ -334,7 +334,15 @@ Entity 节点保留全部 V3 字段（含 axParentID/entityParentID 祖先链）
 
 ```
 Sources/GVGLCore/   流水线（纯逻辑，合成 fixture 可单测）
-  Models.swift        Entity(递归 children)/SceneApp/GVGLFrame/Index(+Grid)/DisplayInfo/AppSnapshot
+  Screen.swift        DisplayInfo/ScreenInfo（主屏归一化 + displays 元数据）
+  NormRect.swift      归一化矩形
+  Region.swift        Region/Region9（Display Space 象限）
+  Geometry.swift      Geometry（四层归一化 rect）+ 坐标转换（M0 锁定版 + 多屏）
+  Entity.swift        Entity（递归 children）
+  SpatialIndex.swift  帧索引 + grid/cellKey
+  Frame.swift         SyncStatus/AppSnapshot/FrameStatus/SceneApp/GVGLFrame
+  DesktopMap.swift    MapDisplay/MapWindow/DesktopMap + 派生
+  FrameCoding.swift   JSONEncoder/JSONDecoder 策略
   SceneTree.swift     V4 场景树构建/拍平/自然 AX 序/depth 剪枝
   AXSnapshot.swift    DFS 快照 + 批量属性 + 预算/墙钟 + 子树快照 + 菜单栏第二根 + CG 探针接线
   AXValueCoercion.swift  AXValue 统一强转（感知与动作验证共用，避免"同一字段两种读法"）
@@ -342,7 +350,6 @@ Sources/GVGLCore/   流水线（纯逻辑，合成 fixture 可单测）
   Geometry.swift      坐标转换（M0 锁定版 + 多屏）
   Pipeline.swift      快照 → 实体（角色白名单/几何/祖先/z-order；不再产关系与索引）
   IDStabilizer.swift  跨重建 ID 稳定 + PipelineOutput.remapped
-  （SpatialIndex 类型位于 Models.swift）
 Sources/GVGLSync/   半同步引擎
   DesktopModel.swift  常驻模型 + version + 变更日志 + 帧物化
   ObserverRegistry.swift  每 App AXObserver（专用 RunLoop 线程）
