@@ -116,6 +116,25 @@ python3 scripts/act_smoke.py --socket /tmp/gvgl-act.sock
 .build/release/gvgl --node-budget 20000 --capture-time 12
 ```
 
+## Python 封装
+
+`client/gvgl_act.py` 是 gvglact 的薄封装：只做参数拼装、NDJSON 解析、错误码
+翻译——动作逻辑零重复（评分那一份双实现由向量夹具钉住，动作不应再造第二份）。
+
+```python
+from gvgl_act import ActClient
+client = ActClient(socket="/tmp/gvgl.sock")
+client.press("pid:123:0-2")                    # 语义按下
+client.type(text="你好", target="pid:123:0-1") # 输入
+client.transcript(app="pid:123")               # 读窗口文本
+```
+
+失败抛 `ActError`（`.code` 为稳定错误码）。包装层门禁：
+
+```bash
+python3 scripts/test_act_client.py
+```
+
 ## 已知限制
 
 - 画布/游戏等无 AX 语义的界面只能坐标点击；命中测试不可用时默认拒绝（可用

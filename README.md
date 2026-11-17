@@ -94,6 +94,14 @@ gvglact app   activate --target com.apple.finder
 gvglact wait  --since 120 --timeout 3
 ```
 
+Python agent 的动作入口（薄封装，逻辑零重复）：
+
+```bash
+python3 client/gvgl_act.py press --id pid:123:0-2
+python3 client/gvgl_act.py type  --id pid:123:0-1 --text "你好"
+python3 client/gvgl_act.py transcript --app pid:123
+```
+
 - 输出恒为单行 JSON（`--pretty` 美化），退出码 `0` 成功 / `1` 失败 / `2` 用法错误；
   失败带稳定错误码（`stale_reference` / `target_obscured` / `ambiguous_match` …）。
 - `changed` 表示桌面确实有反应，`verified` 表示反应符合该动作的预期——两者分开，

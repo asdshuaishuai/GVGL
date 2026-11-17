@@ -188,6 +188,7 @@ python3 scripts/load_check.py --socket /tmp/gvgl-load.sock
 ```bash
 swift test --filter ScoringParityTests
 python3 scripts/test_scoring_parity.py
+python3 scripts/test_act_client.py     # Python 动作封装：argv 转发/解析/错误码/真机 status
 ```
 
 改评分规则时：先改向量预期，再改两端实现，最后跑两个门。
