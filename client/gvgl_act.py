@@ -20,6 +20,8 @@
     python3 client/gvgl_act.py drag    --from pid:1:0-2 --to pid:1:0-3
     python3 client/gvgl_act.py menu    --app pid:123 --path "文件/新建窗口"
     python3 client/gvgl_act.py focus   --id pid:123:0-1
+    python3 client/gvgl_act.py set     --id pid:123:0-1 --value "文本"
+    python3 client/gvgl_act.py app     activate com.apple.finder
     python3 client/gvgl_act.py wait    --since 120 --timeout 3
     python3 client/gvgl_act.py clipboard get|set --text ...
 
@@ -191,6 +193,15 @@ class ActClient:
             args += ["--since", str(since)]
         return self.run(*args)
 
+    def set_value(self, target: str, value: str) -> dict:
+        return self.run("set", "--id", target, "--value", value)
+
+    def app_action(self, verb: str, target: str | None = None) -> dict:
+        args = ["app", verb]
+        if target:
+            args.append(target)
+        return self.run(*args)
+
     def clipboard(self, verb: str, text: str | None = None) -> dict:
         args = ["clipboard", verb]
         if text is not None:
@@ -266,6 +277,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_menu.add_argument("--app", required=True)
     p_menu.add_argument("--path", required=True)
 
+    p_set = action_parser("set")
+    p_set.add_argument("--value", required=True)
+
+    p_app = sub.add_parser("app")
+    p_app.add_argument("verb", choices=["activate", "launch", "list"])
+    p_app.add_argument("target", nargs="?")
+
     p_wait = sub.add_parser("wait")
     p_wait.add_argument("--since", type=int)
     p_wait.add_argument("--timeout", type=float, default=5.0)
@@ -317,6 +335,10 @@ def main(argv: list[str] | None = None) -> int:
             payload = client.drag(args.from_id, args.to_id)
         elif args.command == "menu":
             payload = client.menu(args.app, args.path)
+        elif args.command == "set":
+            payload = client.set_value(args.id, args.value)
+        elif args.command == "app":
+            payload = client.app_action(args.verb, args.target)
         elif args.command == "wait":
             payload = client.wait(since=args.since, timeout=args.timeout or 5.0)
         elif args.command == "clipboard":
