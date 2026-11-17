@@ -407,9 +407,10 @@ public final class SocketServer: @unchecked Sendable {
                 return (Self.errorResponse("permission_denied", "Accessibility permission not granted"), nil)
             }
             // Coarse agent minimap (V5): displays + top-level windows in
-            // Display Space with quadrant labels. Derived from the cached
-            // frame — millisecond-scale, no AX calls.
-            let map = model.frame(screen: engine.screen).desktopMap
+            // Display Space with quadrant labels, front-to-back. Built from
+            // the resident model directly — no frame materialization, no scene
+            // tree, no index.
+            let map = model.desktopMap(screen: engine.screen)
             guard let payload = try? JSONEncoder.gvgl.encode(["result": map]),
                   let text = String(data: payload, encoding: .utf8) else {
                 return (Self.errorResponse("internal", "map serialization failed"), nil)

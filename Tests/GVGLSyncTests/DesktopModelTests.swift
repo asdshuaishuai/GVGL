@@ -431,4 +431,48 @@ final class DesktopModelTests: XCTestCase {
         model.removeApp(appKey: "pid:1")
         XCTAssertEqual(model.changedRegions(after: v3), ["d1q2", "d2q3"], "removal logs the emptied buckets")
     }
+
+    /// get_map is polled often; it must be derivable from the resident model
+    /// without materializing a frame, and must agree with the frame-derived
+    /// map exactly.
+    func testDesktopMapMatchesFrameDerivedMap() {
+        let model = DesktopModel()
+        let multi = ScreenInfo(width: 3440, height: 1440, scaleFactor: 1, displays: [
+            DisplayInfo(id: 1, x: 0, y: 0, width: 3440, height: 1440),
+            DisplayInfo(id: 2, x: 3440, y: 0, width: 2560, height: 1440),
+        ])
+        func window(_ id: String, app: String, pid: Int32, title: String,
+                    zIndex: Int?, displayID: Int?) -> Entity {
+            let r = NormRect(x: 0.1, y: 0.1, w: 0.3, h: 0.3)
+            return Entity(id: id, role: "AXWindow", title: title, detail: nil, identifier: nil,
+                          enabled: true, actions: [], axParentID: nil, entityParentID: nil,
+                          windowID: id, appID: app, pid: pid, appName: "App",
+                          displayID: displayID, zIndex: zIndex,
+                          geometry: Geometry(screen: r, window: .unit, display: r))
+        }
+        let button = Entity(id: "pid:1:0-1", role: "AXButton", title: "登录", detail: nil,
+                            identifier: nil, enabled: true, actions: ["AXPress"],
+                            axParentID: nil, entityParentID: "pid:1:0", windowID: "pid:1:0",
+                            appID: "pid:1", pid: 1,
+                            geometry: Geometry(screen: NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05),
+                                               window: NormRect(x: 0.2, y: 0.2, w: 0.05, h: 0.05)))
+        model.upsert(appKey: "pid:1", output: PipelineOutput(
+            entities: [window("pid:1:0", app: "pid:1", pid: 1, title: "窗口A", zIndex: 3, displayID: 2), button]),
+                     meta: meta("pid:1", 1, "A"))
+        model.upsert(appKey: "pid:2", output: PipelineOutput(
+            entities: [window("pid:2:0", app: "pid:2", pid: 2, title: "窗口B", zIndex: 1, displayID: 1)]),
+                     meta: meta("pid:2", 2, "B"))
+        model.setFrontmost(appKey: "pid:1")
+
+        let fromModel = model.desktopMap(screen: multi)
+        let fromFrame = model.frame(screen: multi).desktopMap
+        XCTAssertEqual(fromModel, fromFrame, "model-side map must equal the frame-derived map")
+        XCTAssertEqual(fromModel.windows.map(\.id), ["pid:2:0", "pid:1:0"], "zIndex 序，前台在前")
+        // `display` is the index into DesktopMap.displays, not the CG id.
+        XCTAssertEqual(fromModel.windows.map(\.display), [0, 1])
+        XCTAssertEqual(fromModel.windows.map(\.frontmost), [false, true])
+        XCTAssertEqual(fromModel.frontmostApp, "pid:1")
+        XCTAssertEqual(fromModel.displays.map(\.id), [1, 2])
+        XCTAssertEqual(fromModel.status, .ok)
+    }
 }

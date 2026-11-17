@@ -146,6 +146,10 @@ public final class DesktopModel: @unchecked Sendable {
         // subscriber gets a "changed" push (and every `get_frame?since` pull
         // returns a full frame) several times a second for nothing.
         guard Self.isObservableChange(from: previousState, to: newState) else { return }
+        // Buckets are computed only for changes a client can observe: the
+        // reconciler re-captures every app each sweep, and on a quiet desktop
+        // this diff (two dictionaries + N deep entity compares) ran on every
+        // one of them only to be discarded by the guard above.
         bumpVersionLocked(appKey, regions: Self.changedRegionBuckets(previous: previous, current: finalOutput.entities))
     }
 
@@ -358,6 +362,79 @@ public final class DesktopModel: @unchecked Sendable {
         )
     }
 
+    /// Frame-level status priority (DESIGN §7): warming > permissionDenied >
+    /// partial > ok; an empty model is unavailable. Shared by materialization
+    /// and the model-side `desktopMap` so the two paths can never disagree.
+    static func frameStatus(of states: [AppState]) -> FrameStatus {
+        if states.isEmpty { return .unavailable }
+        if states.contains(where: { $0.meta.status == .warming }) { return .warming }
+        if states.contains(where: { $0.meta.status == .permissionDenied }) { return .permissionDenied }
+        if states.contains(where: { $0.truncated }) { return .partial }
+        return .ok
+    }
+
+    /// Coarse desktop map built straight from the resident model.
+    ///
+    /// `get_map` is the agent's first fetch and is polled often; materializing
+    /// a full frame (scene tree + index) just to list windows pays the wrong
+    /// cost. This walks each app's flat entities — exactly the set the scene
+    /// tree flattens to — and skips both. Parity with
+    /// `GVGLFrame.desktopMap` is pinned by test.
+    public func desktopMap(screen: ScreenInfo) -> DesktopMap {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let mapDisplays: [MapDisplay]
+        if screen.displays.isEmpty {
+            mapDisplays = [MapDisplay(
+                id: 0, index: 0, x: 0, y: 0,
+                width: screen.width, height: screen.height,
+                scaleFactor: screen.scaleFactor
+            )]
+        } else {
+            mapDisplays = screen.displays.enumerated().map { index, d in
+                MapDisplay(id: d.id, index: index, x: d.x, y: d.y,
+                           width: d.width, height: d.height, scaleFactor: d.scaleFactor)
+            }
+        }
+        let indexOfDisplayID = Dictionary(
+            mapDisplays.map { ($0.id, $0.index) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        var windows: [MapWindow] = []
+        for appKey in apps.keys.sorted() {
+            guard let state = apps[appKey] else { continue }
+            for e in state.output.entities where e.role == "AXWindow" {
+                windows.append(MapWindow(
+                    id: e.id,
+                    appKey: e.appID,
+                    appName: e.appName,
+                    title: e.title,
+                    display: e.displayID.flatMap { indexOfDisplayID[$0] } ?? 0,
+                    rect: e.geometry.display,
+                    region: e.geometry.region,
+                    region9: e.geometry.region9,
+                    zIndex: e.zIndex,
+                    frontmost: e.appID == frontmostAppKey
+                ))
+            }
+        }
+        windows.sort {
+            let za = $0.zIndex ?? Int.max
+            let zb = $1.zIndex ?? Int.max
+            return za == zb ? $0.id < $1.id : za < zb
+        }
+
+        return DesktopMap(
+            version: versionStorage,
+            displays: mapDisplays,
+            windows: windows,
+            frontmostApp: frontmostAppKey,
+            status: Self.frameStatus(of: Array(apps.values))
+        )
+    }
+
     /// Materializes a frame from the current model. O(entities) — no AX calls.
     /// Identical (version, filter, screen, depth) requests hit the
     /// materialization cache; only JSON serialization remains.
@@ -416,19 +493,7 @@ public final class DesktopModel: @unchecked Sendable {
         let flat = scene.flatMap { SceneTree.flatten($0.children) }
         let index = SpatialIndex.build(from: flat, gridSize: gridSizeStorage)
 
-        let status: FrameStatus
-        if states.isEmpty {
-            status = .unavailable
-        } else if states.contains(where: { $0.meta.status == .warming }) {
-            status = .warming
-        } else if states.contains(where: { $0.meta.status == .permissionDenied }) {
-            status = .permissionDenied
-        } else if states.contains(where: { $0.truncated }) {
-            status = .partial
-        } else {
-            status = .ok
-        }
-
+        let status = Self.frameStatus(of: states)
         let now = Date()
         let frame = GVGLFrame(
             frameID: UUID().uuidString,
