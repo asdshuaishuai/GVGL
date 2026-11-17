@@ -193,11 +193,23 @@ func exitWithFailure(_ command: String, _ error: ActionError, pretty: Bool) -> N
 
 // MARK: - Main
 
+let verbs: Set<String> = [
+    "status", "find", "press", "click", "type", "key", "scroll", "drag",
+    "menu", "text", "transcript", "focus", "set", "app", "clipboard", "wait",
+]
+
 let argv = Array(CommandLine.arguments.dropFirst())
-guard let command = argv.first else { emitUsage() }
+// Tolerate global flags before the verb (`gvglact --socket /tmp/x status`):
+// callers — wrapper scripts above all — naturally put options first. Rotate
+// the leading flag block behind the verb; ParsedArgs is position-agnostic.
+// The verb is located by name (not by "first non-flag token") because a
+// flag's VALUE can legitimately look like a verb.
+let verbIndex = argv.firstIndex { verbs.contains($0) }
+let rotated = verbIndex.map { Array(argv[$0...] + argv[..<$0]) } ?? argv
+guard let command = rotated.first, verbs.contains(command) else { emitUsage() }
 if command == "--help" || command == "-h" || command == "help" { emitUsage() }
 
-let args = ParsedArgs.parse(Array(argv.dropFirst()))
+let args = ParsedArgs.parse(Array(rotated.dropFirst()))
 let pretty = args.has("pretty")
 
 let socketPath = args.value("socket")
