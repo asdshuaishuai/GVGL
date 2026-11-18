@@ -37,7 +37,7 @@ struct SidebarView: View {
                     .buttonStyle(.bordered)
                 Button("演示动作") { model.runSelfTest() }
                     .disabled(!model.allowExecute)
-                    .help("在本控制台自身上跑一次无害动作（聚焦 socket 路径框），填充动作日志")
+                    .help("在本控制台自身上跑一次无害动作（聚焦侧栏过滤框），填充动作日志")
             }
 
             Section("筛选") {

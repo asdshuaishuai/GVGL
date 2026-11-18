@@ -309,15 +309,17 @@ final class DesktopViewModel: ObservableObject {
     }
 
     /// Console self-test: run one harmless action against this console through
-    /// the same executor agents use. Moving keyboard focus to the socket-path
-    /// field is idempotent, lives in the reliably-captured top strip of the
-    /// window, and the focus event makes the daemon bump its version — so the
-    /// action log gets a real, verified entry a human can read, without
-    /// touching anything on the real desktop.
+    /// the same executor agents use. Target is the sidebar's filter field —
+    /// under the daemon's default node budget the sidebar's 500-row entity
+    /// list exhausts the capture before the top strip, so the socket-path
+    /// field is NOT in the frame (verified live: the filter field was the
+    /// only AXTextField captured). Focusing the filter field is idempotent,
+    /// reliably visible to the daemon, and the focus event bumps the version
+    /// — a real, verified action-log entry without touching the desktop.
     func runSelfTest() {
         let ownAppKey = "pid:\(ProcessInfo.processInfo.processIdentifier)"
         runAction("focus", target: nil) { [executor] in
-            try executor.focus(.query(QueryParams(role: "AXTextField", label: "socket 路径", app: ownAppKey, top: 5)))
+            try executor.focus(.query(QueryParams(role: "AXTextField", label: "过滤", app: ownAppKey, top: 5)))
         }
     }
 
