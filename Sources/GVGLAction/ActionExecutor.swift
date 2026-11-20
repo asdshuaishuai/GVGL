@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 import GVGLCore
@@ -342,6 +343,19 @@ public final class ActionExecutor {
         let target = try resolve(spec)
         result.target = ActionTargetSummary(entity: target.entity, liveFrame: target.state.frame)
         result.warnings = target.warnings
+
+        // Focusing a background app is the one AX write that can redirect the
+        // user's next keystroke. Background mode only allows it inside the app
+        // that is already frontmost; bringing another app forward is a
+        // foreground action.
+        if !mode.allowsSyntheticInput,
+           NSWorkspace.shared.frontmostApplication?.processIdentifier != target.pid {
+            throw ActionFailure(
+                .blockedByPolicy,
+                "focus targets a non-frontmost app; background mode only focuses within the "
+                + "currently frontmost app (use --mode foreground)"
+            )
+        }
         let version = currentVersion()
         result.before = beforeSnapshot(target, version: version)
 

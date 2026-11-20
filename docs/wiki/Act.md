@@ -25,7 +25,8 @@ AXSetValue / AXScrollBar）并回读验证。
 
 | 动作 | 后台模式行为 |
 | :--- | :--- |
-| `press` / `click`(left,1) / `set` / `focus` / 读取类 | 允许；`click` 变成目标控件的 AX 语义激活，不是坐标点击 |
+| `press` / `click`(left,1) / `set` / 读取类 | 允许；`click` 变成目标控件的 AX 语义激活，不是坐标点击 |
+| `focus` | 仅当目标 App 已在前台；不激活、不把焦点交给后台 App |
 | `type`(auto) | 仅当 AXValue 可写；不移动焦点、不发按键 |
 | `scroll` | 写 AXScrollBar 的 AXValue；`--to top/bottom` 直接到位；无滚动条则拒绝 |
 | `menu` | 仅当目标 App 已在前台；不主动激活 |
@@ -58,7 +59,7 @@ gvglact drag --from pid:123:0-2 --to pid:123:0-3 # 需 --mode foreground
 gvglact menu --app pid:123 --path "文件/新建窗口" # 后台要求该 App 已在前台
 gvglact text --id pid:123:0-1                    # 读该元素完整 AXValue
 gvglact set --id pid:123:0-1 --value "abc"       # 原子写 AXValue
-gvglact focus --id pid:123:0-1
+gvglact focus --id pid:123:0-1                   # 后台仅限已在前台的 App
 gvglact app activate --target com.apple.finder   # 需 --mode foreground
 gvglact clipboard get
 gvglact wait --since 120 --timeout 3

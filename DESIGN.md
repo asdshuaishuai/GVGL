@@ -647,7 +647,8 @@ App/窗口（appKey/windowID）× 什么角色/文本（role/label）"** 四级�
 
 | 动作 | background 策略 |
 | :--- | :--- |
-| `press` / `click`(left,1) / `set` / `focus` / 读取类 | 允许；`click` = 目标控件的 AX 语义激活，不是坐标点击 |
+| `press` / `click`(left,1) / `set` / 读取类 | 允许；`click` = 目标控件的 AX 语义激活，不是坐标点击 |
+| `focus` | 仅当目标 App 已在前台；不激活、不把焦点交给后台 App |
 | `type`(auto) | 仅当 AXValue 可写；不移动焦点、不发按键 |
 | `scroll` | 写 AXScrollBar 的 AXValue；`--to top/bottom` 直接到位；无滚动条则拒绝 |
 | `menu` | 仅当目标 App 已在前台（不主动激活） |

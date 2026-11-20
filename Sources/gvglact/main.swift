@@ -106,7 +106,8 @@ commands:
   text     <target>               read the full AXValue (--max N)
   transcript [--app pid:N] [--window ID]
                                   read a window/desktop as text, in AX order
-  focus    <target>               move AX focus (does not activate the app)
+  focus    <target>               move AX focus; background requires the target
+                                  app to be frontmost (does not activate it)
   set      <target> --value TEXT  write AXValue atomically
   app      activate|launch|list [target]
                                   activate needs foreground; background launch
