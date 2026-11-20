@@ -16,6 +16,32 @@ gvgl (只读模型) ──UDS 帧──► gvglact ──AX 动作 / 合成事�
 | 可审计 | 守护进程仍是"零写调用"，只读性可机械验证 |
 | 隔离 | 执行器崩溃不会带走常驻模型 |
 
+## 后台隔离（默认）
+
+目标：agent 在后台干活，前台用户继续用电脑——不改前台 App、不动指针、不抢键盘、
+不覆盖剪贴板。macOS 没有公开 API 给 agent 开一个输入隔离的“第二桌面”，因此 GVGL
+的隔离方式是**不碰共享输入通路**：只调用 Accessibility 语义动作（AXPress /
+AXSetValue / AXScrollBar）并回读验证。
+
+| 动作 | 后台模式行为 |
+| :--- | :--- |
+| `press` / `click`(left,1) / `set` / `focus` / 读取类 | 允许；`click` 变成目标控件的 AX 语义激活，不是坐标点击 |
+| `type`(auto) | 仅当 AXValue 可写；不移动焦点、不发按键 |
+| `scroll` | 写 AXScrollBar 的 AXValue；`--to top/bottom` 直接到位；无滚动条则拒绝 |
+| `menu` | 仅当目标 App 已在前台；不主动激活 |
+| `key` / `hover` / `drag` / 非 left click / `type --method keys|paste` / `--submit` | `blocked_by_policy` |
+| `app launch` | 允许，但 `activates=false`，不抢前台 |
+| `app activate` / `clipboard set` | `blocked_by_policy`（读剪贴板允许） |
+
+`--mode foreground` 恢复合成鼠标/键盘路径（只适合 agent 独占的机器）。每条结果的
+`isolation` 字段标明本次动作运行在哪种模式；`status` 额外返回 `frontmost_pid` /
+`frontmost_name` / `cursor` / `clipboard_change_count`，动作前后比对即可机械证明
+“没有碰前台”。
+
+边界：语义动作直接投递给目标 App，App 自己可能因业务逻辑激活窗口——那是 App 的
+行为，不是 GVGL 合成的输入。像素级界面（游戏/画布）和必须按键的流程在 macOS 上
+无法隔离，后台模式会明确拒绝，不会偷偷退回合成事件。
+
 ## 命令
 
 ```bash
@@ -23,17 +49,17 @@ gvglact status                                   # AX 权限 + 守护进程状�
 gvglact transcript --app pid:123                 # 把窗口读成文本（替代截图）
 gvglact find --role AXButton --label 登录         # 只定位，不动作
 gvglact press --id pid:123:0-2                   # AXPress（不是坐标点击）
-gvglact click --id pid:123:0-2 --count 2         # 命中测试后的双击
-gvglact type --id pid:123:0-1 --text "你好 hello" # AXValue → 粘贴 → Unicode 按键
-gvglact key --chord "cmd+s" --app pid:123
-gvglact scroll --id pid:123:0-5 --down 5
-gvglact hover  --id pid:123:0-5                 # 工具提示/悬停显现
-gvglact drag --from pid:123:0-2 --to pid:123:0-3
-gvglact menu --app pid:123 --path "文件/新建窗口"
+gvglact click --id pid:123:0-2                   # 后台=语义激活；双击需 --mode foreground
+gvglact type --id pid:123:0-1 --text "你好 hello" # 后台=AXValue；其余回退需 foreground
+gvglact key --chord "cmd+s" --app pid:123        # 需 --mode foreground
+gvglact scroll --id pid:123:0-5 --down 5         # 后台写 AXScrollBar 值
+gvglact hover  --id pid:123:0-5                 # 工具提示/悬停显现（需 foreground）
+gvglact drag --from pid:123:0-2 --to pid:123:0-3 # 需 --mode foreground
+gvglact menu --app pid:123 --path "文件/新建窗口" # 后台要求该 App 已在前台
 gvglact text --id pid:123:0-1                    # 读该元素完整 AXValue
 gvglact set --id pid:123:0-1 --value "abc"       # 原子写 AXValue
 gvglact focus --id pid:123:0-1
-gvglact app activate --target com.apple.finder
+gvglact app activate --target com.apple.finder   # 需 --mode foreground
 gvglact clipboard get
 gvglact wait --since 120 --timeout 3
 ```
@@ -54,7 +80,8 @@ gvglact wait --since 120 --timeout 3
 | `ok` | 操作已执行 |
 | `changed` | 桌面确实有反应（版本推进或元素状态变化） |
 | `verified` | 反应符合该动作的预期（输入回读一致、关闭后元素消失等） |
-| `method` | 实际路径：`ax_press` / `ax_set_value` / `cg_click` / `cg_key` … |
+| `method` | 实际路径：`ax_press` / `ax_set_value` / `ax_scrollbar` / `cg_click` / `cg_key` … |
+| `isolation` | `background` / `foreground`：本次动作是否允许合成输入 |
 | `before` / `after` | 元素状态与版本的前后快照 |
 | `warnings` | 非致命信息（回退、重定位、低置信度） |
 
@@ -63,8 +90,11 @@ gvglact wait --since 120 --timeout 3
 
 ## 安全护栏
 
-- **命中测试**：点击前用 `AXUIElementCopyElementAtPosition` 确认落点是目标本身、
-  其后代或（容器目标的）祖先；否则 `target_obscured` 拒绝。没有截图也能避免点穿。
+- **命中测试**（仅前台模式）：坐标点击前用 `AXUIElementCopyElementAtPosition`
+  确认落点是目标本身、其后代或（容器目标的）祖先；否则 `target_obscured` 拒绝。
+  没有截图也能避免点穿。后台模式不做坐标动作，自然也不需要命中测试。
+- **默认不干扰**：`--mode background` 从策略层禁止合成输入、激活和剪贴板写入；
+  拒绝发生在解析目标和任何写入之前。
 - **新鲜度校验**：ID 是地址不是句柄。每次动作都重新解析元素，role/identifier/位置
   不符时刷新模型并唯一重定位一次，仍不符则 `stale_reference`。
 - **输入前置条件**：打字前必须确认焦点在目标上，否则 `focus_failed`——绝不向未知
@@ -109,6 +139,8 @@ python3 scripts/act_smoke.py --socket /tmp/gvgl-act.sock
 - **动作日志**（侧栏）：方法 / 是否变化 / 是否验证 / 耗时 / 错误码
 - **窗口文本面板**：读选中窗口或前台 App 的 AX 文本，替代截图
 - **允许执行动作**：唯一闸门；读取窗口文本始终可用
+- **后台模式（不干扰前台）**：默认开启；关闭后才允许指针/键盘类动作。动作日志会
+  标注每条是「后台」还是「前台」执行
 
 重 App（SwiftUI/Electron）超出默认 3000 节点预算时，控制台会显示 `partial`；启动
 守护进程时调大预算：
@@ -124,13 +156,14 @@ python3 scripts/act_smoke.py --socket /tmp/gvgl-act.sock
 
 ```python
 from gvgl_act import ActClient
-client = ActClient(socket="/tmp/gvgl.sock")
+client = ActClient(socket="/tmp/gvgl.sock")    # 默认 mode="background"
 client.press("pid:123:0-2")                    # 语义按下
-client.type(text="你好", target="pid:123:0-1") # 输入
+client.type(text="你好", target="pid:123:0-1") # AXValue 写入，不动焦点
 client.transcript(app="pid:123")               # 读窗口文本
 ```
 
-失败抛 `ActError`（`.code` 为稳定错误码）。包装层门禁：
+CLI 同样默认后台隔离，必要时 `--mode foreground`。失败抛 `ActError`（`.code` 为
+稳定错误码）。包装层门禁：
 
 ```bash
 python3 scripts/test_act_client.py
@@ -138,11 +171,19 @@ python3 scripts/test_act_client.py
 
 ## 已知限制
 
-- 画布/游戏等无 AX 语义的界面只能坐标点击；命中测试不可用时默认拒绝（可用
+- 画布/游戏等无 AX 语义的界面只能坐标点击：后台模式直接 `blocked_by_policy`；
+  需要 `--mode foreground`。前台模式命中测试不可用时仍默认拒绝（可用
   `--allow-blind-click` 显式放开）。
+- macOS 没有公开 API 创建输入隔离的“第二桌面”。后台模式保证的是**不碰共享输入**
+  （指针/键盘/激活/剪贴板），不能阻止目标 App 因自身业务逻辑激活窗口或弹窗；
+  真正的独立桌面需要第二用户会话或虚拟机，超出本工具范围。
+- 后台 `type` 走 AXValue 原子写入，不产生逐键事件：依赖 `keyDown`、输入法或
+  search-as-you-type 的控件可能出现“值已写入但业务逻辑未触发”。这类流程需要
+  `--mode foreground` 的真实按键；回读验证能发现差异（`changed` 为真而业务没动）。
 - Electron/Chromium 的 Web 树取决于其辅助功能是否被触发；未暴露时只能看到外壳控件。
-- 覆盖式滚动条通常不在 AX 树中：此时滚动以"内容是否变化"验证。若目标本身是
-  `AXScrollBar`，则直接读其 0…1 的位置值（`--to top/bottom` 会据此判定终点）。
+- 覆盖式滚动条通常不在 AX 树中：后台模式会拒绝（没有 AXScrollBar 可写），前台
+  模式用滚轮并以“内容是否变化”验证。若目标本身是 `AXScrollBar`，则直接读其
+  0…1 的位置值（`--to top/bottom` 会据此判定终点）。
 - 菜单项仅在展开时存在，`menu` 是多步动作；失败会指出具体段落。
 - 不提供 quit / 改窗口几何等破坏性动词。
 - **锁屏时不要操作**：macOS 只服务 loginwindow 的 AX，帧会退化为空、动作会

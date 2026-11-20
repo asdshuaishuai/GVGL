@@ -8,6 +8,11 @@
 
 感知仍在 gvgl_query.py（帧/地图/查询）；本模块只负责"做"。
 
+默认 `--mode background`：只走 Accessibility 语义动作，不移动鼠标、不合成
+键盘、不切换前台 App、不写剪贴板——前台用户不受影响。需要指针/键盘的动词
+（hover/drag/key、非 left 单击、非 AXValue 输入）会返回 `blocked_by_policy`；
+只有在 agent 独占的机器上才用 `--mode foreground` 放开合成输入。
+
 用法（与 gvglact 动词一一对应）：
 
     python3 client/gvgl_act.py status
@@ -75,13 +80,16 @@ class ActClient:
     """Thin wrapper: builds argv, runs gvglact, parses the one JSON line."""
 
     def __init__(self, executable: str | None = None, socket: str | None = None,
-                 timeout: float = 30.0):
+                 timeout: float = 30.0, mode: str = "background"):
         self.executable = executable or find_executable()
         self.socket = socket or DEFAULT_SOCKET
         self.timeout = timeout
+        # "background" (default) never touches the shared HID stream; set
+        # "foreground" only on a machine the agent owns.
+        self.mode = mode
 
     def run(self, *args) -> dict:
-        argv = [self.executable, "--socket", self.socket, *args]
+        argv = [self.executable, "--socket", self.socket, "--mode", self.mode, *args]
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout)
         out = proc.stdout.strip()
         if not out:
@@ -220,6 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="gvgl_act.py",
         description="gvglact 的 Python 封装：感知 + 动作，全程零截图。")
     p.add_argument("--socket", default=DEFAULT_SOCKET)
+    p.add_argument("--mode", default="background", choices=["background", "foreground"],
+                   help="background（默认）只走 Accessibility 语义动作，不干扰前台用户；"
+                        "foreground 允许合成鼠标/键盘")
     p.add_argument("--executable", default=None, help="gvglact 路径（默认自动查找）")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -301,7 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    client = ActClient(executable=args.executable, socket=args.socket)
+    client = ActClient(executable=args.executable, socket=args.socket, mode=args.mode)
     try:
         if args.command == "status":
             payload = client.status()

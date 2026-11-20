@@ -2,11 +2,15 @@
 //
 // Why a harness instead of a real app: scrolling someone's browser or dragging
 // their window changes their work. This window owns its content, exposes a
-// legacy scroll bar (so AXScrollBar carries a readable 0…1 value) and a slider
-// next to a button on the same row (so a drag has an observable value change).
+// legacy scroll bar (so AXScrollBar carries a readable 0…1 value), a slider
+// next to a button on the same row (so a drag has an observable value change),
+// plus an editable field and a checkbox for background-isolation tests.
+//
+// `--no-activate` keeps the current frontmost app in front, so `gvglact` can
+// be measured against a genuinely background window.
 //
 //   swiftc -O -o /tmp/gvgl-action-harness scripts/action_harness.swift
-//   /tmp/gvgl-action-harness &
+//   /tmp/gvgl-action-harness --no-activate &
 //
 //   # scroll — verified 0 → 0.089 (10 lines), --to top → 0.000, --to bottom → 1.000
 //   .build/release/gvglact find --app pid:NNN --role AXScrollBar
@@ -24,6 +28,10 @@ import AppKit
 
 final class HarnessDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
+
+    @objc func toggle(_ sender: NSButton) {
+        sender.state = sender.state == .on ? .off : .on
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = NSWindow(
@@ -59,10 +67,26 @@ final class HarnessDelegate: NSObject, NSApplicationDelegate {
         button.bezelStyle = .rounded
         content.addSubview(button)
 
+        // Background-isolation fixtures: an AXValue-settable field and a
+        // checkbox whose AXPress flips state. Both change the AX tree without
+        // requiring pointer or keyboard events.
+        let field = NSTextField(frame: NSRect(x: 20, y: 4, width: 300, height: 24))
+        field.stringValue = "background type"
+        field.isEditable = true
+        content.addSubview(field)
+
+        let checkbox = NSButton(checkboxWithTitle: "BACKGROUND TEST",
+                                target: self, action: #selector(toggle(_:)))
+        checkbox.frame = NSRect(x: 340, y: 4, width: 220, height: 24)
+        checkbox.state = .off
+        content.addSubview(checkbox)
+
         window.contentView = content
         window.makeKeyAndOrderFront(nil)
         self.window = window
-        NSApp.activate(ignoringOtherApps: true)
+        if !CommandLine.arguments.contains("--no-activate") {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }
 

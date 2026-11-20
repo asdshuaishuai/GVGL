@@ -91,21 +91,27 @@ usage: gvglact <command> [target] [flags]
 commands:
   status                          AX trust + daemon status
   find                            locate elements (no action)
-  press    --id ID | --role R --label L      semantic AXPress (click fallback)
-  click    <target>               pointer click (hit-tested; --button, --count)
-  type     <target> --text TEXT   set value / paste / unicode keys; --submit
-  key      --chord "cmd+s"        keyboard chord; optional --app or --id
-  scroll   <target>               --up N | --down N | --to top|bottom
-  hover    <target>               move the pointer over it (tooltips, hover-reveal)
-  drag     --from ID --to ID      pointer drag between two elements
-  menu     --app pid:N --path "A/B"   drive the menu bar by path or indices
+  press    --id ID | --role R --label L      semantic AXPress
+  click    <target>               background: semantic activation; foreground:
+                                  hit-tested pointer click (--button, --count)
+  type     <target> --text TEXT   background: AXValue only; foreground adds
+                                  paste/unicode keys; --submit needs foreground
+  key      --chord "cmd+s"        keyboard chord (needs --mode foreground)
+  scroll   <target>               background: AXScrollBar value; foreground:
+                                  wheel (--up N | --down N | --to top|bottom)
+  hover    <target>               move the pointer (needs --mode foreground)
+  drag     --from ID --to ID      pointer drag (needs --mode foreground)
+  menu     --app pid:N --path "A/B"   drive the menu bar; background requires
+                                  the app to already be frontmost
   text     <target>               read the full AXValue (--max N)
   transcript [--app pid:N] [--window ID]
                                   read a window/desktop as text, in AX order
-  focus    <target>               move keyboard focus
+  focus    <target>               move AX focus (does not activate the app)
   set      <target> --value TEXT  write AXValue atomically
   app      activate|launch|list [target]
-  clipboard get|set [--text TEXT]
+                                  activate needs foreground; background launch
+                                  starts the app without bringing it forward
+  clipboard get|set [--text TEXT] set needs foreground; get is always allowed
   wait     --since VERSION        block until the model changes
 
 target flags:
@@ -120,6 +126,10 @@ target flags:
 
 global flags:
   --socket PATH          default ~/.gvgl/gvgl.sock or $GVGL_SOCKET
+  --mode background|foreground
+                         default background: AX semantics only; no pointer,
+                         keyboard, activation or clipboard writes. foreground
+                         allows synthetic input (a machine the agent owns).
   --dry-run              resolve + hit-test, then stop
   --no-verify            do not wait for / report the reaction
   --timeout SECONDS      verification window (default 2)
@@ -188,8 +198,11 @@ func targetJSON(_ scored: ScoredEntity, frame: GVGLFrame) -> JSONValue {
     ])
 }
 
-func exitWithFailure(_ command: String, _ error: ActionError, pretty: Bool) -> Never {
-    emit(ActionResult.failure(command, error), pretty: pretty)
+func exitWithFailure(_ command: String, _ error: ActionError, pretty: Bool,
+                     mode: InteractionMode) -> Never {
+    var result = ActionResult.failure(command, error)
+    result.isolation = mode
+    emit(result, pretty: pretty)
 }
 
 // MARK: - Main
@@ -217,6 +230,13 @@ let socketPath = args.value("socket")
     ?? ProcessInfo.processInfo.environment["GVGL_SOCKET"]
     ?? GVGLClient.defaultSocketPath
 
+if args.has("mode") {
+    emitUsage("--mode needs a value: background or foreground")
+}
+guard let mode = InteractionMode(rawValue: args.value("mode") ?? InteractionMode.background.rawValue) else {
+    emitUsage("--mode must be 'background' or 'foreground'")
+}
+
 var options = ExecutorOptions(socketPath: socketPath)
 options.dryRun = args.has("dry-run")
 options.verify = !args.has("no-verify")
@@ -231,10 +251,10 @@ if !allowApps.isEmpty {
     options.allowAppKeys = Set(allowApps)
 }
 
-let executor = ActionExecutor(options: options)
+let executor = ActionExecutor(options: options, mode: mode)
 
 do {
-    let result: ActionResult
+    var result: ActionResult
     switch command {
     case "status":
         result = try executor.status()
@@ -359,11 +379,13 @@ do {
     default:
         throw UsageError(message: "unknown command '\(command)'")
     }
+    result.isolation = executor.mode
     emit(result, pretty: pretty)
 } catch let failure as ActionFailure {
-    exitWithFailure(command, failure.error, pretty: pretty)
+    exitWithFailure(command, failure.error, pretty: pretty, mode: executor.mode)
 } catch let usage as UsageError {
     emitUsage(usage.message)
 } catch {
-    exitWithFailure(command, ActionError(.internalError, "\(error)"), pretty: pretty)
+    exitWithFailure(command, ActionError(.internalError, "\(error)"), pretty: pretty,
+                    mode: executor.mode)
 }

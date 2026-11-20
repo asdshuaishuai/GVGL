@@ -18,6 +18,7 @@
 | 8 | 零截图是机械门禁（`audit_no_screenshot.sh`），无"截图兜底"开关 | 产品定位；权限与信任面的边界 |
 | 9 | transcript 读窗口文本替代截图 | 感知层的第一公民，不是附加功能 |
 | 10 | 感知退化如实上报：`partial` / `warming` / `permissionDenied` / `screenLocked` | 锁屏时 AX 只服务 loginwindow，其余 App 退化为 0 实体；"0 实体 ≠ 空桌面"，agent 必须能区分（macOS 用 `CGSessionCopyCurrentDictionary`，本地查询） |
+| 11 | 默认不干扰前台：不合成 HID、不激活 App、不写剪贴板；语义动作优先且拒绝有明确错误码 | computer use 的产品底线；执行器只在显式 foreground 模式放开共享输入（§7） |
 
 ## 2. 平台映射表
 
@@ -34,6 +35,8 @@
 | 锁屏检测 | `CGSessionCopyCurrentDictionary` → `CGSSessionScreenIsLocked` | loginctl / DBus（`org.freedesktop.ScreenSaver`、`org.gnome.ScreenSaver`） | `SystemParametersInfo(SPI_GETSCREENSAVERRUNNING)` / WTS 会话态 |
 | 屏幕枚举与坐标基准 | `CGGetOnlineDisplayList` + 主屏归一化 | XRandR / Wayland output 协议 | `EnumDisplayMonitors` + DPI 感知 |
 | 元素标签来源 | title；SwiftUI/Electron 走 description | AT-SPI Name（同理可能落在 description） | UIA Name / AutomationId |
+| 共享输入隔离 | `--mode background`：AX 语义动作 + AXScrollBar；HID 关闭 | 同左（AT-SPI Action/Value） | 同左（UIA Invoke/Value Pattern） |
+| 真隔离桌面（可选升级） | 无公开 API；需第二用户会话或虚拟机 | Xvfb / headless compositor | `CreateDesktop` + 进程启动到该 desktop / window station |
 
 ## 3. 可直接复用的模块（纯逻辑，零平台依赖）
 
@@ -42,7 +45,7 @@
 - `GVGLQuery`：QueryEngine（五维评分）、InstructionParser、GVGLClient（UDS 契约）。
 - `GVGLAction` 的纯逻辑部分：ElementPath（ID 文法）、KeyChord、JSONValue/ActionResult、
   ActionFailure、ClickGuard 的判定规则、transcript 的标签优先级（title → placeholder →
-  detail，value 作内容）。
+  detail，value 作内容）、`InteractionMode` 策略门禁（动词 → 能力约束，§7）。
 - 协议与 CLI 表面、Python 参考客户端、全部审计脚本（几何/覆盖/零截图/评分向量）。
 
 ## 4. 必须按平台重写的适配层（接口已按此划分）
@@ -77,3 +80,25 @@
   换算在缩放下错位——对应 macOS 的"主屏归一化 + 执行时乘回主屏尺寸"语义。
 - **多屏**：Region 按 Display Space 派生（V5）的语义必须原样保留，否则副屏象限
   重蹈"恒 q1/q3 垃圾标签"的覆辙。
+
+## 7. 隔离等级：后台语义 vs 真虚拟桌面
+
+| 等级 | 效果 | macOS | Linux | Windows |
+| :--- | :--- | :--- | :--- | :--- |
+| L0 foreground | 可合成输入，会影响前台用户 | CGEvent | XTest / uinput | `SendInput` |
+| L1 background（产品默认） | 不碰共享输入；语义动作照常 | AX 动作 + AXScrollBar | AT-SPI Action/Value | UIA Pattern |
+| L2 独立 GUI 会话 | 真隔离桌面，输入互不可见 | 无公开 API（第二登录会话 / 虚拟机） | Xvfb / headless compositor | `CreateDesktop` + window station |
+
+移植时先实现 L1（它是产品默认），L2 是部署选项而不是执行器逻辑：
+
+- **Linux X11**：`Xvfb :N` 起独立 display，目标 App 与执行器都以 `DISPLAY=:N`
+  启动；XTest 事件只进入该 display，用户主 display 不受影响。
+- **Linux Wayland**：headless compositor（sway/weston headless）建独立会话，
+  执行器在该会话内运行；AT-SPI 总线也要在该会话内。
+- **Windows**：`CreateDesktop` 建私有 desktop，目标进程用
+  `STARTUPINFO.lpDesktop` 启动；该 desktop 内的 `SendInput` 不进入用户 desktop。
+  UIA 调用必须从该 desktop 的线程发起。
+- **L1 验收（平台无关）**：动作前后比较前台上层 App、指针位置、剪贴板
+  `changeCount`（macOS 的 `gvglact status` 已返回这三项），三者不变且语义动作
+  `changed/verified` 为真。L1 不阻止目标 App 因自身业务逻辑激活窗口或弹窗——那是
+  App 行为；如果需要连这一点也隔离，必须上 L2。

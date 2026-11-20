@@ -1,6 +1,6 @@
 # 测试
 
-## 单测（133 个，不依赖真实 AX，全部用合成 fixture）
+## 单测（182 个，不依赖真实 AX，全部用合成 fixture）
 
 ```bash
 swift test
@@ -30,7 +30,7 @@ swift test --sanitize=thread
 全绿标准：`0` 个 `WARNING: ThreadSanitizer`，且全部测试通过（TSan 默认在第一处
 竞争即中止，进程会以 signal 6 退出，所以"跑完"本身就是关键信号）。
 
-当前状态：**133 个用例，0 竞争，0 失败**。
+当前状态：**182 个用例，0 竞争，0 失败**（2026-11-20，含后台隔离策略）。
 
 > 踩过的坑：`SyncEngineTests.MockCapturer` 曾是 `@unchecked Sendable` + 裸可变
 > 字段，采集在 `syncQueue`、测试线程在配置与轮询计数器，于是 TSan 稳定报 10 处
@@ -137,6 +137,15 @@ python3 scripts/act_smoke.py --socket /tmp/gvgl-act.sock
 - 目标被遮挡/过时时返回 `target_obscured` / `stale_reference`，绝不盲点；
 - `--dry-run` 不激活 App、不发事件、不改焦点。
 
+后台隔离验收（默认模式，不干扰前台）：
+- 动作前后各跑一次 `gvglact status`，比较 `frontmost_pid` / `cursor` /
+  `clipboard_change_count`：三项必须完全不变；
+- 同一个后台 App 上 `press` / `type`（AXValue 可写）/ `scroll`（有 AXScrollBar）
+  仍能 `changed + verified`；
+- `key` / `hover` / `drag` / `app activate` / `clipboard set` 必须返回
+  `blocked_by_policy`，且错误结果也带 `"isolation":"background"`；
+- `click` 的 `method` 必须是 `ax_*`（后台语义激活），绝不能出现 `cg_*`。
+
 审查台（GUI）也可以用它自己的方式验收——不靠人眼、不靠截图：
 
 ```bash
@@ -155,10 +164,10 @@ swiftc -O -o /tmp/gvgl-action-harness scripts/action_harness.swift
 .build/release/gvglact scroll --id <scrollbar> --down 10   # 0 → ~0.09
 .build/release/gvglact scroll --id <scrollbar> --to top    # 回到 0
 
-# 拖拽：滑块 → 同行按钮
+# 拖拽：滑块 → 同行按钮（拖拽是合成指针，需显式 foreground）
 .build/release/gvglact find --app pid:NNN --role AXSlider
 .build/release/gvglact find --app pid:NNN --role AXButton
-.build/release/gvglact drag --from <slider> --to <button>  # AXValue 0 → 1
+.build/release/gvglact --mode foreground drag --from <slider> --to <button>  # AXValue 0 → 1
 ```
 
 ## 负载 / 健壮性检查

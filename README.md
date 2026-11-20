@@ -79,19 +79,25 @@ python3 client/gvgl_query.py watch --interval 0.5            # 轮询观察 vers
 ## Computer Use（无截图执行）
 
 守护进程仍然**完全只读**；动作由独立执行器 `gvglact` 完成：读帧定位 → AX 语义动作
-（失败时回退到经过命中测试的指针事件）→ 回读元素状态验证。**全链路不截图、不 OCR。**
+→ 回读元素状态验证。**全链路不截图、不 OCR。**
+
+默认 `--mode background`：**不移动用户鼠标、不合成键盘、不切换前台 App、不写剪贴板**，
+动作只走 Accessibility 语义通道——后台干活，前台用户无感。只有指针/键盘类动词
+（`hover`/`drag`/`key`、非 left 单击、非 AXValue 输入）会被 `blocked_by_policy`
+拒绝；在 agent 独占的机器上显式 `--mode foreground` 才放开合成输入。
 
 ```bash
 gvglact status                                       # AX 权限 + 守护进程状态
 gvglact transcript --app pid:123                     # 把一个窗口读成文本（替代截图）
 gvglact find --app pid:123 --role AXButton --label 登录
 gvglact press --id pid:123:0-2                       # AXPress（不是坐标点击）
-gvglact type  --id pid:123:0-1 --text "hello 你好"    # AXValue → 粘贴 → Unicode 按键
-gvglact key   --chord "cmd+s" --app pid:123
-gvglact scroll --id pid:123:0-5
-gvglact hover  --id pid:123:0-5                 # 工具提示/悬停显现（无按下） --down 5
-gvglact menu  --app pid:123 --path "文件/新建窗口"
-gvglact app   activate --target com.apple.finder
+gvglact click --id pid:123:0-2                       # 后台模式=语义激活，不移动指针
+gvglact type  --id pid:123:0-1 --text "hello 你好"    # 后台模式走 AXValue 原子写入
+gvglact scroll --id pid:123:0-5 --down 5             # 后台模式写 AXScrollBar 值
+gvglact key   --chord "cmd+s" --app pid:123          # 需 --mode foreground
+gvglact hover  --id pid:123:0-5                      # 需 --mode foreground
+gvglact menu  --app pid:123 --path "文件/新建窗口"    # 后台模式要求该 App 已在前台
+gvglact app   activate --target com.apple.finder     # 需 --mode foreground
 gvglact wait  --since 120 --timeout 3
 ```
 
@@ -107,9 +113,12 @@ python3 client/gvgl_act.py transcript --app pid:123
   失败带稳定错误码（`stale_reference` / `target_obscured` / `ambiguous_match` …）。
 - `changed` 表示桌面确实有反应，`verified` 表示反应符合该动作的预期——两者分开，
   因为"点了但没变化"不是失败，"变化来自别处"也不等于成功。
-- 安全护栏：点击前用 `AXUIElementCopyElementAtPosition` 命中测试，目标被遮挡直接
-  拒绝；`--dry-run` 只解析与校验、不发任何事件；`--allow-app` 限定作用 App；
-  安全输入框默认拒绝输入。
+- 安全护栏：前台模式下点击前用 `AXUIElementCopyElementAtPosition` 命中测试，目标
+  被遮挡直接拒绝；`--dry-run` 只解析与校验、不发任何事件；`--allow-app` 限定作用
+  App；安全输入框默认拒绝输入。
+- 非干扰可验证：`gvglact status` 返回 `frontmost_pid` / `cursor` /
+  `clipboard_change_count` 与 `interaction_mode`；动作前后比对即可证明没有碰前台
+  用户的前台 App、指针和剪贴板。每条结果的 `isolation` 字段标明它运行在哪种模式。
 - 权限模型：读帧只需 socket；**执行需要调用方进程具备辅助功能权限**（与守护进程
   的授权相互独立，最小权限）。
 - 零截图是机械约束：`scripts/audit_no_screenshot.sh` 扫描源码中的截图/OCR API。
@@ -133,7 +142,7 @@ Unix Domain Socket + NDJSON（V4：帧为层次场景图，关系由客户端几
 ## 测试
 
 ```bash
-swift test        # 171 个单测：几何/显示空间/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）+ 动作层（ID 文法/键位/结果编码/transcript 标签/重定位）+ 评分向量一致性
+swift test        # 182 个单测：几何/显示空间/索引/CG 校验/ID 稳定/子树重捕/订阅/评分/指令解析（合成 fixture）+ 动作层（ID 文法/键位/结果编码/transcript 标签/重定位/后台隔离策略）+ 评分向量一致性
 python3 scripts/test_scoring_parity.py   # Swift QueryEngine 与 Python 客户端评分一致性（共用 Tests/Fixtures/query_vectors.json）
 ```
 

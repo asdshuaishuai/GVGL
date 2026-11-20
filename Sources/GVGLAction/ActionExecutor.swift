@@ -79,11 +79,17 @@ public struct ResolvedTarget {
 ///    when something else is on top. No screenshot is involved anywhere.
 public final class ActionExecutor {
     public let options: ExecutorOptions
+    /// Fixed for this executor's lifetime. The review console replaces the
+    /// executor when its toggle changes, so an in-flight action always keeps
+    /// the policy it started under and no thread mutates a shared setting.
+    public let mode: InteractionMode
     let source: FrameSource
 
-    public init(options: ExecutorOptions, source: FrameSource? = nil) {
+    public init(options: ExecutorOptions, source: FrameSource? = nil,
+                mode: InteractionMode = .background) {
         self.options = options
         self.source = source ?? SocketFrameSource(socketPath: options.socketPath)
+        self.mode = mode
     }
 
     // MARK: - Find
@@ -539,16 +545,38 @@ public final class ActionExecutor {
         result.target = ActionTargetSummary(entity: target.entity, liveFrame: target.state.frame)
         result.warnings = target.warnings
 
+        // AXShowMenu opens UI (and a menu bar belongs to the frontmost app), so
+        // it is only an implicit fallback in foreground mode. An explicit
+        // --ax-action AXShowMenu is still honoured in either mode.
         let preferred = axAction.map { [$0] }
-            ?? ["AXPress", "AXConfirm", "AXPick", "AXOpen", "AXShowMenu"]
+            ?? (mode.allowsSyntheticInput
+                ? ["AXPress", "AXConfirm", "AXPick", "AXOpen", "AXShowMenu"]
+                : ["AXPress", "AXConfirm", "AXPick", "AXOpen"])
         guard let action = preferred.first(where: { target.state.actions.contains($0) }) else {
-            result.warnings.append(
-                "no AX action exposed (\(target.state.actions.isEmpty ? "none" : target.state.actions.joined(separator: ","))); using a hit-tested click"
-            )
+            let available = target.state.actions.isEmpty
+                ? "none" : target.state.actions.joined(separator: ",")
+            guard mode.allowsSyntheticInput else {
+                // A blind coordinate click is a shared-desktop effect; in
+                // background mode it is never an acceptable fallback.
+                throw ActionFailure(
+                    .actionUnsupported,
+                    "no AX action exposed (\(available)); background mode will not synthesize a click "
+                    + "(use --mode foreground)"
+                )
+            }
+            result.warnings.append("no AX action exposed (\(available)); using a hit-tested click")
             return try click(target, button: .left, count: 1,
                              method: "cg_click_fallback", into: result, started: started)
         }
+        return try performAX(action, on: target, result: result, started: started)
+    }
 
+    /// Performs one accessibility action and verifies the reaction. Shared by
+    /// `press` and the background-mode meaning of `click`, so both report the
+    /// same method vocabulary and verification semantics.
+    private func performAX(_ action: String, on target: ResolvedTarget,
+                           result: ActionResult, started: DispatchTime) throws -> ActionResult {
+        var result = result
         let version = currentVersion()
         result.before = beforeSnapshot(target, version: version)
         let methodName = Self.methodName(forAction: action)
@@ -588,6 +616,32 @@ public final class ActionExecutor {
         let target = try resolve(spec)
         result.target = ActionTargetSummary(entity: target.entity, liveFrame: target.state.frame)
         result.warnings = target.warnings
+
+        if !mode.allowsSyntheticInput {
+            // "Click" is a semantic request ("activate this control"), not a
+            // request to move the user's mouse. In background mode it becomes
+            // the control's own AX action; an element that has none is refused
+            // rather than clicked blind.
+            guard button == .left, count == 1 else {
+                throw ActionFailure(
+                    .blockedByPolicy,
+                    "\(button.rawValue) click (count \(count)) needs synthetic mouse input, "
+                    + "which is disabled in background mode (use --mode foreground)"
+                )
+            }
+            let preferred = ["AXPress", "AXConfirm", "AXPick", "AXOpen"]
+            guard let action = preferred.first(where: { target.state.actions.contains($0) }) else {
+                throw ActionFailure(
+                    .actionUnsupported,
+                    "element exposes no semantic activation action "
+                    + "(\(target.state.actions.isEmpty ? "none" : target.state.actions.joined(separator: ","))); "
+                    + "background mode will not synthesize a click (use --mode foreground)"
+                )
+            }
+            result.warnings.append("background isolation: semantic activation; pointer not moved")
+            return try performAX(action, on: target, result: result, started: started)
+        }
+
         return try click(target, button: button, count: count,
                          method: methodName(button: button, count: count),
                          into: result, started: started)
@@ -672,6 +726,7 @@ public final class ActionExecutor {
     /// either, because "something else" may be a menu that would open.
     public func hover(_ spec: TargetSpec) throws -> ActionResult {
         let started = DispatchTime.now()
+        try mode.requireSyntheticInput("hover")
         var result = ActionResult(action: "hover")
         let target = try resolve(spec)
         result.target = ActionTargetSummary(entity: target.entity, liveFrame: target.state.frame)
@@ -709,6 +764,24 @@ public final class ActionExecutor {
     public func type(_ spec: TargetSpec, text: String,
                      method: TypeMethod = .auto, submit: Bool = false) throws -> ActionResult {
         let started = DispatchTime.now()
+        // Refuse before writing anything: a half-done "set value, then can't
+        // send Return" is worse than a clean refusal.
+        if !mode.allowsSyntheticInput {
+            if submit {
+                throw ActionFailure(
+                    .blockedByPolicy,
+                    "submit sends Return through synthetic keyboard input, which is disabled in background mode "
+                    + "(use --mode foreground, or press the default button explicitly)"
+                )
+            }
+            if method == .keys || method == .paste {
+                throw ActionFailure(
+                    .blockedByPolicy,
+                    "typing via \(method.rawValue) needs synthetic keyboard input, which is disabled in background mode "
+                    + "(background typing requires a settable AXValue; use --mode foreground otherwise)"
+                )
+            }
+        }
         var result = ActionResult(action: "type")
         let target = try resolve(spec)
         result.target = ActionTargetSummary(entity: target.entity, liveFrame: target.state.frame)
@@ -720,28 +793,48 @@ public final class ActionExecutor {
                 "refusing to type into a secure field (override with --allow-secure-field)"
             )
         }
+        let policyMethod = method == .auto
+            ? automaticMethod(text: text, state: target.state) : method
+        if !mode.allowsSyntheticInput, policyMethod != .setValue {
+            throw ActionFailure(
+                .blockedByPolicy,
+                "element does not allow AXValue; background mode will not synthesize keystrokes "
+                + "(use --mode foreground)"
+            )
+        }
+
         let version = currentVersion()
         result.before = beforeSnapshot(target, version: version)
 
         if options.dryRun {
             result.dryRun = true
-            result.method = "type_\(method.rawValue)"
+            result.method = policyMethod == .setValue
+                ? "ax_set_value" : "cg_\(policyMethod.rawValue)"
             result.latencyMS = elapsed(started)
             return result
         }
 
-        // Focus is a precondition, not a nicety: Unicode key events and Cmd+V
-        // go wherever focus is, and typing into an unknown control is worse
-        // than failing.
-        let focusedState = focusElement(target)
-        guard focusedState.focused else {
-            throw ActionFailure(
-                .focusFailed,
-                "could not move keyboard focus to \(target.entity.id); refusing to type into an unknown control"
-            )
+        // Focus is a precondition for synthetic input, not for AXValue. In
+        // background mode a focus write is skipped entirely: it can change
+        // what the user's next keystroke hits.
+        let focusedState: AXElementState
+        let resolvedMethod: TypeMethod
+        if mode.allowsSyntheticInput {
+            // Unicode key events and Cmd+V go wherever focus is, and typing
+            // into an unknown control is worse than failing.
+            focusedState = focusElement(target)
+            guard focusedState.focused else {
+                throw ActionFailure(
+                    .focusFailed,
+                    "could not move keyboard focus to \(target.entity.id); refusing to type into an unknown control"
+                )
+            }
+            resolvedMethod = method == .auto
+                ? automaticMethod(text: text, state: focusedState) : method
+        } else {
+            focusedState = target.state
+            resolvedMethod = policyMethod
         }
-
-        let resolvedMethod = method == .auto ? automaticMethod(text: text, state: focusedState) : method
         result.method = resolvedMethod == .setValue ? "ax_set_value" : "cg_\(resolvedMethod.rawValue)"
 
         switch resolvedMethod {
@@ -808,6 +901,7 @@ public final class ActionExecutor {
     public func sendKey(_ chordText: String, target spec: TargetSpec? = nil,
                         app appKey: String? = nil) throws -> ActionResult {
         let started = DispatchTime.now()
+        try mode.requireSyntheticInput("key")
         var result = ActionResult(action: "key")
         try ensureTrusted()
         guard let chord = KeyChord.parse(chordText) else {

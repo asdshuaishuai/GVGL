@@ -134,6 +134,10 @@ public struct ActionResult: Codable, Sendable {
     public var action: String
     public var target: ActionTargetSummary?
     public var method: String?
+    /// Which interaction policy this action ran under. Present on every CLI
+    /// result so an audit can tell "semantic only" from "may have touched the
+    /// shared input path" without inferring it from the method name.
+    public var isolation: InteractionMode?
     public var dryRun: Bool
     public var latencyMS: Int
     public var changed: Bool
@@ -150,6 +154,7 @@ public struct ActionResult: Codable, Sendable {
         self.action = action
         self.target = nil
         self.method = nil
+        self.isolation = nil
         self.dryRun = false
         self.latencyMS = 0
         self.changed = false

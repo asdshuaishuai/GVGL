@@ -26,6 +26,11 @@ struct SidebarView: View {
                 Toggle("自动跟随", isOn: $model.autoWatch)
                 Toggle("允许执行动作", isOn: $model.allowExecute)
                     .help("开启后可用同一执行器按下/点击/输入/滚动真实桌面；读取文本始终可用")
+                Toggle("后台模式（不干扰前台）", isOn: $model.backgroundMode)
+                    .help("默认开启：只走 Accessibility 语义动作，不移动鼠标、不合成键盘、不切换前台 App、不写剪贴板。关闭后允许合成输入，仅适合 agent 独占的机器。")
+                    .onChange(of: model.backgroundMode) { _, value in
+                        model.setIsolation(background: value)
+                    }
                 HStack(spacing: 6) {
                     Image(systemName: model.axTrusted ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
                         .foregroundStyle(model.axTrusted ? Color.green : Color.orange)

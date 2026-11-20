@@ -60,8 +60,9 @@
 | 模型驻留，帧是视图 | 虚拟桌面模型常驻内存；`get_frame` 只读物化模型，不做 AX 调用 |
 | 侧挂不居中 | 执行操作由调用方负责（`client/gvgl_query.py --cliclick`） |
 
-以上为**守护进程**铁律。V6 的执行器 `gvglact` 是独立进程（§V6-1），它注入事件、
-改变焦点，但守护进程本身仍零写调用——两条边界不能混为一谈。
+以上为**守护进程**铁律。V6 的执行器 `gvglact` 是独立进程（§V6-1）：只有显式
+`--mode foreground` 才注入事件、改变焦点；默认的 background 模式不碰共享输入
+（§V6-10）。守护进程本身仍零写调用——两条边界不能混为一谈。
 
 ## 2. 坐标系（M0 实测锁定）
 
@@ -359,11 +360,11 @@ Sources/GVGLSync/   半同步引擎
   WindowSubtreeMerge.swift  per-window 子树合并三重过滤 + ID 路径解析 + 采集闸门（纯函数，可单测）
 Sources/GVGLServer/  UDS 服务（get_frame/since/subscribe 推送/get_status）
 Sources/gvgl/       守护进程入口（参数/信号/显示器枚举）
-Sources/GVGLAction/ computer-use 执行层（元素解析/语义动作/合成事件/命中测试/回读验证）
+Sources/GVGLAction/ computer-use 执行层（元素解析/语义动作/合成事件/命中测试/回读验证/交互隔离策略）
 Sources/gvglact/    执行器 CLI（press/click/type/key/scroll/drag/menu/transcript/app/…）
 client/gvgl_query.py 参考客户端（status/frame/list/query/subscribe/watch + --json/--cell）
 scripts/             launchd 安装/卸载 + audit_geometry.py + audit_no_screenshot.sh + act_smoke.py
-Tests/              171 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签/重定位；评分向量双端一致性）
+Tests/              182 个单测（不依赖真实 AX；动作层含 ID 文法/键位/结果编码/transcript 标签/重定位/后台隔离策略；评分向量双端一致性）
 ```
 
 ## 11. 运行参数
@@ -637,6 +638,51 @@ App/窗口（appKey/windowID）× 什么角色/文本（role/label）"** 四级�
 | 自举动作 | `gvglact press` 按下 console 的「前台 App」按钮 → `ax_press`、changed、verified |
 | 效果观测 | 9s 内（含 daemon 重采）窗口文本由占位符变为前台 App（ZCode）全文 |
 | 标签保真 | `允许执行动作: 0` / `自动跟随: 1`（AXDescription + 状态），不再丢标签 |
+
+#### V6-10 默认后台隔离（不干扰前台用户，2026-11-20）
+
+**规则**：`gvglact` 默认 `--mode background`——不合成鼠标/键盘事件、不移动指针、
+不激活 App、不写剪贴板；动作只走 Accessibility 语义通道。只有显式
+`--mode foreground` 才恢复旧的合成输入路径（仅适合 agent 独占的机器）。
+
+| 动作 | background 策略 |
+| :--- | :--- |
+| `press` / `click`(left,1) / `set` / `focus` / 读取类 | 允许；`click` = 目标控件的 AX 语义激活，不是坐标点击 |
+| `type`(auto) | 仅当 AXValue 可写；不移动焦点、不发按键 |
+| `scroll` | 写 AXScrollBar 的 AXValue；`--to top/bottom` 直接到位；无滚动条则拒绝 |
+| `menu` | 仅当目标 App 已在前台（不主动激活） |
+| `key` / `hover` / `drag` / 非 left click / `type keys|paste` / `--submit` | `blocked_by_policy` |
+| `app launch` | 允许，但 `activates=false`；`app activate` 拒绝 |
+| `clipboard get` | 允许；`clipboard set` 拒绝（会覆盖用户剪贴板） |
+
+实现要点：
+
+- 策略门禁在**解析目标之前**执行，拒绝不花 daemon 往返、不产生任何写入；错误码统一
+  `blocked_by_policy`，消息说明原因与逃生口。
+- `click` 在后台模式被重新解释为"语义激活"；没有 AX 动作的元素用
+  `action_unsupported` 明确拒绝，绝不偷偷回退到坐标点击。
+- 后台 `type` 不写 AXFocused（AXValue 写入不需要焦点，写焦点可能改变用户下一次
+  按键的落点）；`--submit` 在写入前整体拒绝，避免"值写了但回车发不出去"的半成品。
+- 后台 `scroll` 直接写 `AXScrollBar` 的 AXValue（与用户拖动滚动条是同一个值），
+  没有可写滚动条时拒绝；前台模式才用滚轮事件。
+- 后台 `type` 的 AXValue 写入不产生逐键事件：依赖 keyDown / 输入法 /
+  search-as-you-type 的控件可能"值变了但业务没动"；这类流程需要 foreground。
+  回读验证会如实反映差异（可能 `changed` 为真而业务无进展）。
+- `status` 增加 `interaction_mode` / `frontmost_pid` / `frontmost_name` / `cursor` /
+  `clipboard_change_count`；每条动作结果的 `isolation` 字段标明运行模式。前后比对
+  这三项即可机械证明没有干扰前台用户。
+- CLI (`--mode`)、Python 封装 (`ActClient(mode=...)`) 与审查台开关（默认开启
+  「后台模式（不干扰前台）」）使用同一套策略；审查台动作日志标注「后台/前台」。
+
+**为什么不是"真的开一个虚拟桌面"**：macOS 没有公开 API 让第三方进程创建输入隔离
+的第二 GUI 会话。`CGVirtualDisplay` 只增加显示输出，不隔离 HID 输入；Fast User
+Switching 是另一用户会话（需要账号，且主用户被切走），不属于本工具范围。因此隔离
+的正确实现是**不碰共享输入**，而不是伪造一个桌面。目标 App 因自身业务逻辑激活窗口
+属于 App 行为；GVGL 不合成输入，也不保证 App 不自己动。
+
+Linux（Xvfb / headless compositor）与 Windows（`CreateDesktop` / window station）
+可以提供真正的隔离桌面；这是 Porting 的升级项，见
+[docs/wiki/Porting.md](docs/wiki/Porting.md) §7。
 
 实现方案的跨平台抽象（不变量 + 平台映射表 + 适配层划分）见
 [docs/wiki/Porting.md](docs/wiki/Porting.md)：帧契约、评分、动作算法、安全护栏、

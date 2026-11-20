@@ -59,9 +59,9 @@ with tempfile.TemporaryDirectory() as td:
 
     forwarded = argv_file.read_text().split()
     check(
-        "forwards socket before verb and --id verbatim",
-        forwarded[:2] == ["--socket", "/tmp/fake.sock"]
-        and forwarded[2:] == ["press", "--id", "pid:1:0-2"],
+        "forwards socket, isolation mode and verb verbatim",
+        forwarded == ["--socket", "/tmp/fake.sock", "--mode", "background",
+                      "press", "--id", "pid:1:0-2"],
         str(forwarded),
     )
 

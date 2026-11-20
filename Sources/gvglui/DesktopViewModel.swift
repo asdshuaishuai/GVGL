@@ -17,6 +17,9 @@ final class DesktopViewModel: ObservableObject {
     @Published var selectedID: String?
     @Published var autoWatch = true
     @Published var allowExecute = false
+    /// Default on: the console must not disturb the desktop it observes.
+    /// Turning this off opts into synthetic pointer/keyboard input.
+    @Published var backgroundMode = true
 
     @Published var lastInstruction: String?
     @Published var lastResult: QueryResult?
@@ -41,6 +44,8 @@ final class DesktopViewModel: ObservableObject {
         let action: String
         let target: String?
         let method: String?
+        /// "background" or "foreground" — which policy the action ran under.
+        let isolation: String?
         let changed: Bool
         let verified: Bool
         let latencyMS: Int
@@ -54,6 +59,9 @@ final class DesktopViewModel: ObservableObject {
                 return "\(errorCode): \(errorMessage ?? "")"
             }
             var parts: [String] = []
+            if let isolation {
+                parts.append(isolation == InteractionMode.background.rawValue ? "后台" : "前台")
+            }
             if let method { parts.append(method) }
             parts.append(changed ? "已变化" : "无变化")
             parts.append(verified ? "已验证" : "未验证")
@@ -93,7 +101,7 @@ final class DesktopViewModel: ObservableObject {
         let path = GVGLClient.defaultSocketPath
         socketPath = path
         client = GVGLClient(socketPath: path)
-        executor = ActionExecutor(options: ExecutorOptions(socketPath: path))
+        executor = ActionExecutor(options: ExecutorOptions(socketPath: path), mode: .background)
     }
 
     /// Embedded daemon helper: "GVGL Console.app/Contents/Resources/gvgl"
@@ -118,7 +126,8 @@ final class DesktopViewModel: ObservableObject {
         subscription?.cancel()
         daemonLaunchAttempted = false
         client = GVGLClient(socketPath: socketPath)
-        executor = ActionExecutor(options: ExecutorOptions(socketPath: socketPath))
+        executor = ActionExecutor(options: ExecutorOptions(socketPath: socketPath),
+                                  mode: backgroundMode ? .background : .foreground)
         axTrusted = AXIsProcessTrusted()
         connected = false
         errorMessage = nil
@@ -323,6 +332,15 @@ final class DesktopViewModel: ObservableObject {
         }
     }
 
+    /// Replace the executor rather than mutating it: an in-flight action keeps
+    /// the policy it started under, and the next action uses the new one.
+    func setIsolation(background: Bool) {
+        executor = ActionExecutor(
+            options: ExecutorOptions(socketPath: executor.options.socketPath),
+            mode: background ? .background : .foreground
+        )
+    }
+
     // MARK: - Transcript (read-only; never gated by the execute toggle)
 
     func loadTranscriptForSelection() {
@@ -394,7 +412,9 @@ final class DesktopViewModel: ObservableObject {
             entry = ActionLogEntry(
                 time: Date(), action: label,
                 target: target.map(entityDisplayTitle) ?? result.target?.title,
-                method: result.method, changed: result.changed,
+                method: result.method,
+                isolation: (result.isolation ?? executor.mode).rawValue,
+                changed: result.changed,
                 verified: result.verified, latencyMS: result.latencyMS,
                 errorCode: result.error?.code.rawValue,
                 errorMessage: result.error?.message
@@ -407,7 +427,8 @@ final class DesktopViewModel: ObservableObject {
             entry = ActionLogEntry(
                 time: Date(), action: label,
                 target: target.map(entityDisplayTitle),
-                method: nil, changed: false, verified: false, latencyMS: 0,
+                method: nil, isolation: executor.mode.rawValue,
+                changed: false, verified: false, latencyMS: 0,
                 errorCode: failure?.error.code.rawValue ?? "internal_error",
                 errorMessage: failure?.error.message ?? "\(error)"
             )
